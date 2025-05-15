@@ -99,7 +99,7 @@ async def thumb_selection(bot, update):
         update.message.chat.id,
         text=f"**Select The Output File Type**\n\n**File Name :-** `{new_name}`",
         reply_to_message_id=file.id,
-        reply_markup=InlineKeyboardMarkup(button)
+        reply_markup=InlineKeyboardMarkup(button))
     
 
 @Client.on_callback_query(filters.regex("upload"))
