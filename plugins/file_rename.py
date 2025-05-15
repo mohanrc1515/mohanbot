@@ -52,11 +52,11 @@ async def refunc(client, message):
             new_name = new_name + "." + extn
         await reply_message.delete()
 
-        button = [[InlineKeyboardButton("📁 Document",callback_data = "upload_document")]]
+        button = [[InlineKeyboardButton("📁 Document", callback_data="upload_document")]]
         if file.media in [MessageMediaType.VIDEO, MessageMediaType.DOCUMENT]:
-            button.append([InlineKeyboardButton("🎥 Video", callback_data = "upload_video")])
+            button.append([InlineKeyboardButton("🎥 Video", callback_data="upload_video")])
         elif file.media == MessageMediaType.AUDIO:
-            button.append([InlineKeyboardButton("🎵 Audio", callback_data = "upload_audio")])
+            button.append([InlineKeyboardButton("🎵 Audio", callback_data="upload_audio")])
         
         # Add thumbnail selection buttons
         button.append([
@@ -75,7 +75,10 @@ async def refunc(client, message):
 async def thumb_selection(bot, update):
     await update.message.delete()
     if update.data == "new_thumb":
-        await update.message.reply_text("Please send me a new thumbnail photo.")
+        await bot.send_message(
+            update.message.chat.id,
+            "Please send me a new thumbnail photo."
+        )
         # Here you would typically set a state to wait for the new thumbnail
         # For simplicity, we'll just proceed with the original flow
     else:
@@ -86,13 +89,14 @@ async def thumb_selection(bot, update):
     file = update.message.reply_to_message
     new_name = update.message.text.split(":-")[1].strip()
     
-    button = [[InlineKeyboardButton("📁 Document",callback_data = "upload_document")]]
+    button = [[InlineKeyboardButton("📁 Document", callback_data="upload_document")]]
     if file.media in [MessageMediaType.VIDEO, MessageMediaType.DOCUMENT]:
-        button.append([InlineKeyboardButton("🎥 Video", callback_data = "upload_video")])
+        button.append([InlineKeyboardButton("🎥 Video", callback_data="upload_video")])
     elif file.media == MessageMediaType.AUDIO:
-        button.append([InlineKeyboardButton("🎵 Audio", callback_data = "upload_audio")])
+        button.append([InlineKeyboardButton("🎵 Audio", callback_data="upload_audio")])
     
-    await update.message.reply(
+    await bot.send_message(
+        update.message.chat.id,
         text=f"**Select The Output File Type**\n\n**File Name :-** `{new_name}`",
         reply_to_message_id=file.id,
         reply_markup=InlineKeyboardMarkup(button)
@@ -120,9 +124,9 @@ async def doc(bot, update):
 
     ms = await update.message.edit("🚀 Try To Download...  ⚡")    
     try:
-     	path = await bot.download_media(message=file, file_name=file_path, progress=progress_for_pyrogram,progress_args=("🚀 Try To Downloading...  ⚡", ms, time.time()))                    
+        path = await bot.download_media(message=file, file_name=file_path, progress=progress_for_pyrogram, progress_args=("🚀 Try To Downloading...  ⚡", ms, time.time()))                    
     except Exception as e:
-     	return await ms.edit(e)
+        return await ms.edit(e)
     
 
     # Metadata Adding Code
@@ -140,7 +144,7 @@ async def doc(bot, update):
         parser = createParser(file_path)
         metadata = extractMetadata(parser)
         if metadata.has("duration"):
-           duration = metadata.get('duration').seconds
+            duration = metadata.get('duration').seconds
         parser.close()   
     except:
         pass
@@ -152,24 +156,24 @@ async def doc(bot, update):
     c_thumb = await jishubotz.get_thumbnail(update.message.chat.id)
 
     if c_caption:
-         try:
-             caption = c_caption.format(filename=new_filename, filesize=humanbytes(media.file_size), duration=convert(duration))
-         except Exception as e:
-             return await ms.edit(text=f"Your Caption Error Except Keyword Argument: ({e})")             
+        try:
+            caption = c_caption.format(filename=new_filename, filesize=humanbytes(media.file_size), duration=convert(duration))
+        except Exception as e:
+            return await ms.edit(text=f"Your Caption Error Except Keyword Argument: ({e})")             
     else:
-         caption = f"**{new_filename}**"
+        caption = f"**{new_filename}**"
  
     if (media.thumbs or c_thumb):
-         if c_thumb:
-             ph_path = await bot.download_media(c_thumb)
-             width, height, ph_path = await fix_thumb(ph_path)
-         else:
-             try:
-                 ph_path_ = await take_screen_shot(file_path, os.path.dirname(os.path.abspath(file_path)), random.randint(0, duration - 1))
-                 width, height, ph_path = await fix_thumb(ph_path_)
-             except Exception as e:
-                 ph_path = None
-                 print(e)  
+        if c_thumb:
+            ph_path = await bot.download_media(c_thumb)
+            width, height, ph_path = await fix_thumb(ph_path)
+        else:
+            try:
+                ph_path_ = await take_screen_shot(file_path, os.path.dirname(os.path.abspath(file_path)), random.randint(0, duration - 1))
+                width, height, ph_path = await fix_thumb(ph_path_)
+            except Exception as e:
+                ph_path = None
+                print(e)  
 
 
     await ms.edit("💠 Try To Upload...  ⚡")
