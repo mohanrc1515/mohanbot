@@ -3,7 +3,7 @@ from pyrogram.enums import MessageMediaType
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from hachoir.metadata import extractMetadata
-from helper.ffmpeg import fix_thumb, take_screen_shot, add_metadata
+from helper.ffmpeg import fix_thumb, take_screen_shot, add_metadata, add_default_subtitle
 from hachoir.parser import createParser
 from helper.utils import progress_for_pyrogram, convert, humanbytes, add_prefix_suffix
 from helper.database import jishubotz
@@ -24,7 +24,7 @@ async def handle_media(client, message):
         "**Please send a custom thumbnail (image) for this file.**\n\n"
         "⚠️ Send as a photo (not as a document).\n"
         "⏳ Waiting for 60 seconds...",
-        reply_markup=ForceReply(True)
+        reply_markup=ForceReply(True))
     
     try:
         # Wait for thumbnail (60 seconds timeout)
@@ -42,7 +42,7 @@ async def handle_media(client, message):
     await message.reply_text(
         "**Do you want to add external subtitles to this file?**\n\n"
         "If yes, please send the subtitle file (.srt or .ass format).\n"
-        "If not, just wait and I'll proceed without subtitles.\n"
+        "If not, I'll add a default subtitle for the first 3 seconds.\n"
         "⏳ Waiting for 60 seconds...",
         reply_markup=ForceReply(True))
     
@@ -54,9 +54,11 @@ async def handle_media(client, message):
                    (filters.regex(r'\.srt$') | filters.regex(r'\.ass$')),
             timeout=60)
         subtitle_path = await client.download_media(subtitle_msg.document)
+        custom_subtitle = True
     except asyncio.TimeoutError:
         subtitle_path = None
-        await message.reply_text("⏰ No subtitle received. Proceeding without subtitles.")
+        custom_subtitle = False
+        await message.reply_text("⏰ No subtitle received. Adding default subtitle for first 3 seconds.")
 
     # Start processing (default: upload as video)
     ms = await message.reply_text("🚀 Downloading file...")
@@ -70,6 +72,16 @@ async def handle_media(client, message):
             progress_args=("📥 Downloading...", ms, time.time()))
     except Exception as e:
         return await ms.edit(f"❌ Download failed: {e}")
+
+    # Add default subtitle if no custom subtitle provided
+    if not custom_subtitle:
+        try:
+            output_path = f"downloads/{message.chat.id}/subbed_{filename}"
+            await add_default_subtitle(path, output_path, "MOHAN", duration=3)
+            path = output_path  # Use the new path with subtitle
+            await ms.edit("✅ Added default subtitle for first 3 seconds")
+        except Exception as e:
+            await ms.edit(f"⚠️ Couldn't add default subtitle: {e}")
 
     # Get metadata (if enabled)
     _bool_metadata = await jishubotz.get_metadata(message.chat.id)
@@ -107,11 +119,11 @@ async def handle_media(client, message):
     # Upload as video (default)
     await ms.edit("🎥 Uploading as video...")
     try:
-        if subtitle_path:
-            # If subtitle exists, send with subtitle
+        if custom_subtitle and subtitle_path:
+            # If custom subtitle exists, send with subtitle
             await client.send_video(
                 chat_id=message.chat.id,
-                video=metadata_path if _bool_metadata else file_path,
+                video=metadata_path if _bool_metadata else path,
                 caption=caption,
                 thumb=thumb_path,
                 duration=duration,
@@ -119,10 +131,10 @@ async def handle_media(client, message):
                 progress_args=("⬆️ Uploading with subtitles...", ms, time.time()),
                 subtitles=subtitle_path)
         else:
-            # Without subtitle
+            # Without custom subtitle (may have default subtitle)
             await client.send_video(
                 chat_id=message.chat.id,
-                video=metadata_path if _bool_metadata else file_path,
+                video=metadata_path if _bool_metadata else path,
                 caption=caption,
                 thumb=thumb_path,
                 duration=duration,
@@ -138,4 +150,6 @@ async def handle_media(client, message):
             os.remove(subtitle_path)
         if os.path.exists(file_path):
             os.remove(file_path)
+        if os.path.exists(path) and path != file_path:
+            os.remove(path)
         await ms.delete()
