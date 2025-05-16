@@ -9,7 +9,10 @@ from helper.utils import progress_for_pyrogram, convert, humanbytes
 from helper.database import jishubotz
 from asyncio import sleep
 from PIL import Image
-import os, time, random, asyncio
+import os
+import time
+import random
+import asyncio
 
 # Dictionary to store user thumbnail choices
 user_thumbnails = {}
@@ -119,7 +122,8 @@ async def handle_media(client, message):
             caption = c_caption.format(
                 filename=filename,
                 filesize=humanbytes(file.file_size),
-                duration=convert(duration))
+                duration=convert(duration)
+            )
         except Exception as e:
             caption = f"**{filename}**"
     else:
