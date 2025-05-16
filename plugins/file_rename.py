@@ -14,9 +14,6 @@ import time
 import random
 import asyncio
 
-# Dictionary to store user thumbnail choices
-user_thumbnails = {}
-
 @Client.on_message(filters.private & (filters.document | filters.audio | filters.video))
 async def handle_media(client, message):
     file = getattr(message, message.media.value)
@@ -25,52 +22,27 @@ async def handle_media(client, message):
     if file.file_size > 2000 * 1024 * 1024:
         return await message.reply_text("Sorry, this bot doesn't support uploading files bigger than 2GB")
 
-    # Ask if user wants thumbnail
-    thumb_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("With Thumbnail", callback_data="with_thumb")],
-        [InlineKeyboardButton("Without Thumbnail", callback_data="without_thumb")]
-    ])
-    
+    # Always ask for custom thumbnail
     thumb_msg = await message.reply_text(
-        "**Do you want to add a thumbnail?**",
-        reply_markup=thumb_keyboard
+        "**Please send a custom thumbnail (as photo, not document):**\n"
+        "⏳ Waiting for 30 seconds...",
+        reply_markup=ForceReply(True)
     )
-
+    
+    thumb_path = None
     try:
-        # Wait for user's thumbnail choice
         thumb_response = await client.listen(
             chat_id=message.chat.id,
-            filters=filters.callback_query,
+            filters=filters.photo & filters.reply,
             timeout=30
         )
+        thumb_path = await client.download_media(thumb_response.photo)
+        width, height, thumb_path = await fix_thumb(thumb_path)
         await thumb_msg.delete()
-        
-        if thumb_response.data == "with_thumb":
-            # Ask for custom thumbnail
-            thumb_ask = await message.reply_text(
-                "**Please send a custom thumbnail (as photo, not document):**",
-                reply_markup=ForceReply(True)
-            )
-            
-            try:
-                thumb_msg = await client.listen(
-                    chat_id=message.chat.id,
-                    filters=filters.photo & filters.reply,
-                    timeout=30
-                )
-                thumb_path = await client.download_media(thumb_msg.photo)
-                width, height, thumb_path = await fix_thumb(thumb_path)
-                user_thumbnails[message.chat.id] = thumb_path
-                await thumb_ask.delete()
-            except asyncio.TimeoutError:
-                await thumb_ask.edit_text("⏰ No thumbnail received. Proceeding without one.")
-                user_thumbnails[message.chat.id] = None
-        else:
-            user_thumbnails[message.chat.id] = None
-            
     except asyncio.TimeoutError:
-        await thumb_msg.edit_text("⏰ Timeout. Proceeding without thumbnail.")
-        user_thumbnails[message.chat.id] = None
+        await thumb_msg.edit_text("⏰ No thumbnail received. Proceeding without one.")
+    except Exception as e:
+        await thumb_msg.edit_text(f"❌ Error processing thumbnail: {e}")
 
     # Start processing with original filename
     ms = await message.reply_text("🚀 Downloading file...")
@@ -129,22 +101,18 @@ async def handle_media(client, message):
     else:
         caption = f"**{filename}**"
 
-    # Get thumbnail
-    thumb_path = user_thumbnails.get(message.chat.id)
+    # If no custom thumbnail, try to get from database or generate
     if not thumb_path:
-        # Try to get thumbnail from database
         c_thumb = await jishubotz.get_thumbnail(message.chat.id)
         if c_thumb:
             thumb_path = await client.download_media(c_thumb)
             width, height, thumb_path = await fix_thumb(thumb_path)
-        else:
-            # Try to generate thumbnail from video
-            if file.media == MessageMediaType.VIDEO and duration > 0:
-                try:
-                    thumb_path_ = await take_screen_shot(path, os.path.dirname(path), random.randint(0, duration - 1))
-                    width, height, thumb_path = await fix_thumb(thumb_path_)
-                except:
-                    thumb_path = None
+        elif file.media == MessageMediaType.VIDEO and duration > 0:
+            try:
+                thumb_path = await take_screen_shot(path, os.path.dirname(path), random.randint(0, duration - 1))
+                width, height, thumb_path = await fix_thumb(thumb_path)
+            except:
+                thumb_path = None
 
     # Upload as video (for all file types)
     await ms.edit("🎥 Uploading as video...")
@@ -167,6 +135,4 @@ async def handle_media(client, message):
             os.remove(file_path)
         if os.path.exists(path) and path != file_path:
             os.remove(path)
-        if message.chat.id in user_thumbnails:
-            del user_thumbnails[message.chat.id]
         await ms.delete()
