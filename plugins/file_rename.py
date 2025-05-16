@@ -3,12 +3,13 @@ from pyrogram.enums import MessageMediaType
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from hachoir.metadata import extractMetadata
-from helper.ffmpeg import fix_thumb, take_screen_shot, add_metadata
+from helper.ffmpeg import fix_thumb, take_screen_shot, add_metadata, generate_text_thumbnail
 from hachoir.parser import createParser
 from helper.utils import progress_for_pyrogram, convert, humanbytes, add_prefix_suffix
 from helper.database import jishubotz
 from asyncio import sleep
 import os, time, random
+from pathlib import Path
 
 # Dictionary to store temporary thumbnails
 temp_thumbnails = {}
@@ -27,12 +28,16 @@ async def handle_file_upload(client, message):
         'filename': filename
     }
 
-    # Always ask for thumbnail first
+    # Ask if user wants to provide thumbnail or generate automatically
     await message.reply(
-        text="Please send me a thumbnail photo for this file (send as photo).\n\n"
-             "If you don't want a thumbnail, just click /skip",
+        text=f"**File Received:** `{filename}`\n\n"
+             "Choose thumbnail option:\n"
+             "1. Send a custom thumbnail (send as photo)\n"
+             "2. Auto-generate from filename\n"
+             "3. No thumbnail",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Skip Thumbnail", callback_data="skip_thumbnail")]
+            [InlineKeyboardButton("Auto-Generate Thumbnail", callback_data="auto_thumbnail")],
+            [InlineKeyboardButton("No Thumbnail", callback_data="skip_thumbnail")]
         ])
     )
 
@@ -43,20 +48,47 @@ async def receive_thumbnail(bot, message):
     if user_id not in temp_thumbnails:
         return await message.reply("Please send a file first, then send the thumbnail")
     
-    # Store the thumbnail message ID temporarily
+    # Store the thumbnail message ID
     temp_thumbnails[user_id]['thumbnail_id'] = message.id
     
-    # Show confirmation message
+    # Proceed to upload
     filename = temp_thumbnails[user_id]['filename']
     original_message_id = temp_thumbnails[user_id]['message_id']
     
     await message.reply(
-        text=f"Thumbnail received!\n\nFile will be uploaded as video:\n`{filename}`\n\nClick below to start upload.",
+        text=f"Thumbnail received!\n\nFile will be uploaded as video:\n`{filename}`",
         reply_to_message_id=original_message_id,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Start Upload", callback_data="upload_video")]
         ])
     )
+
+@Client.on_callback_query(filters.regex("auto_thumbnail"))
+async def auto_generate_thumbnail(bot, update):
+    user_id = update.from_user.id
+    
+    if user_id not in temp_thumbnails:
+        return await update.answer("No file found to upload")
+    
+    filename = temp_thumbnails[user_id]['filename']
+    original_message_id = temp_thumbnails[user_id]['message_id']
+    
+    # Generate thumbnail from filename
+    try:
+        # Remove extension from filename
+        name_without_ext = Path(filename).stem
+        # Generate text thumbnail
+        thumb_path = await generate_text_thumbnail(name_without_ext)
+        temp_thumbnails[user_id]['auto_thumbnail'] = thumb_path
+        
+        await update.message.edit_text(
+            text=f"✅ Thumbnail generated from filename!\n\nFile will be uploaded as video:\n`{filename}`",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Start Upload", callback_data="upload_video")]
+            ])
+        )
+    except Exception as e:
+        await update.message.edit_text(f"❌ Failed to generate thumbnail: {e}")
 
 @Client.on_callback_query(filters.regex("skip_thumbnail"))
 async def skip_thumbnail(bot, update):
@@ -65,12 +97,10 @@ async def skip_thumbnail(bot, update):
     if user_id not in temp_thumbnails:
         return await update.answer("No file found to upload")
     
-    # Show confirmation message without thumbnail
     filename = temp_thumbnails[user_id]['filename']
-    original_message_id = temp_thumbnails[user_id]['message_id']
     
     await update.message.edit_text(
-        text=f"Thumbnail skipped!\n\nFile will be uploaded as video:\n`{filename}`\n\nClick below to start upload.",
+        text=f"⏩ Thumbnail skipped!\n\nFile will be uploaded as video:\n`{filename}`",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Start Upload", callback_data="upload_video")]
         ])
@@ -152,17 +182,28 @@ async def upload_file(bot, update):
     else:
         caption = f"**{new_filename}**"
     
-    # Handle thumbnail
+    # Handle thumbnail (priority: custom > auto-generated > screenshot > none)
     ph_path = None
+    
+    # 1. Check for custom thumbnail
     if 'thumbnail_id' in file_data:
         try:
             thumb_msg = await bot.get_messages(user_id, file_data['thumbnail_id'])
             ph_path = await bot.download_media(thumb_msg)
             width, height, ph_path = await fix_thumb(ph_path)
         except Exception as e:
-            print(f"Error processing thumbnail: {e}")
+            print(f"Error processing custom thumbnail: {e}")
     
-    # If no thumbnail was provided, try to generate one for videos
+    # 2. Check for auto-generated thumbnail
+    if not ph_path and 'auto_thumbnail' in file_data:
+        ph_path = file_data['auto_thumbnail']
+        try:
+            width, height, ph_path = await fix_thumb(ph_path)
+        except Exception as e:
+            print(f"Error processing auto-generated thumbnail: {e}")
+            ph_path = None
+    
+    # 3. Try to generate screenshot for videos
     if not ph_path and file.media == MessageMediaType.VIDEO:
         try:
             ph_path = await take_screen_shot(
@@ -172,7 +213,7 @@ async def upload_file(bot, update):
             )
             width, height, ph_path = await fix_thumb(ph_path)
         except Exception as e:
-            print(f"Error generating thumbnail: {e}")
+            print(f"Error generating screenshot thumbnail: {e}")
     
     # Start uploading as video
     await ms.edit("📤 Uploading file as video...")
@@ -197,6 +238,8 @@ async def upload_file(bot, update):
             os.remove(file_path)
         if _bool_metadata and metadata_path and os.path.exists(metadata_path):
             os.remove(metadata_path)
+        if 'auto_thumbnail' in file_data and os.path.exists(file_data['auto_thumbnail']):
+            os.remove(file_data['auto_thumbnail'])
         
         # Remove temporary data
         if user_id in temp_thumbnails:
