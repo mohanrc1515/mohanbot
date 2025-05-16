@@ -1,147 +1,75 @@
 from pyrogram import Client, filters
 from pyrogram.enums import MessageMediaType
 from pyrogram.errors import FloodWait
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply, CallbackQuery
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from hachoir.metadata import extractMetadata
 from helper.ffmpeg import fix_thumb, take_screen_shot, add_metadata, add_default_subtitle
 from hachoir.parser import createParser
-from helper.utils import progress_for_pyrogram, convert, humanbytes, add_prefix_suffix
+from helper.utils import progress_for_pyrogram, convert, humanbytes
 from helper.database import jishubotz
 from asyncio import sleep
 from PIL import Image
-import os
-import time
-import re
-import random
-import asyncio
+import os, time, random, asyncio
 
-# Dictionary to store user choices
-user_choices = {}
-
-@Client.on_callback_query(filters.regex(r'^subtitle_'))
-async def subtitle_callback(client, callback_query):
-    data = callback_query.data
-    user_id = callback_query.from_user.id
-    
-    if data == "subtitle_default":
-        user_choices[user_id] = {"subtitle": "default"}
-        await callback_query.message.edit_text(
-            "✅ Default subtitle (MOHAN for 3 seconds) will be added.",
-            reply_markup=None
-        )
-    elif data == "subtitle_custom":
-        user_choices[user_id] = {"subtitle": "custom"}
-        await callback_query.message.edit_text(
-            "📁 Please send your subtitle file (.srt or .ass format):",
-            reply_markup=ForceReply(True)
-        )
-    elif data == "subtitle_none":
-        user_choices[user_id] = {"subtitle": "none"}
-        await callback_query.message.edit_text(
-            "✅ No subtitle will be added to your file.",
-            reply_markup=None
-        )
-    await callback_query.answer()
+# Dictionary to store user thumbnail choices
+user_thumbnails = {}
 
 @Client.on_message(filters.private & (filters.document | filters.audio | filters.video))
 async def handle_media(client, message):
     file = getattr(message, message.media.value)
     filename = file.file_name
-    user_id = message.from_user.id
-
-    if file.file_size > 2000 * 1024 * 1024:
-        return await message.reply_text("❌ File size exceeds 2GB limit.")
-
-    # Ask for custom thumbnail
-    thumb_msg = await message.reply_text(
-        "**🖼️ Please send a custom thumbnail (image) for this file.**\n\n"
-        "⚠️ Send as a photo (not as a document).\n"
-        "⏳ Waiting for 60 seconds...",
-        reply_markup=ForceReply(True)
-    )
     
-    try:
-        # Wait for thumbnail (60 seconds timeout)
-        thumbnail_msg = await client.listen(
-            chat_id=message.chat.id,
-            filters=filters.photo & filters.reply,
-            timeout=60
-        )
-        thumb_path = await client.download_media(thumbnail_msg.photo)
-        width, height, thumb_path = await fix_thumb(thumb_path)
-        await thumb_msg.delete()
-    except asyncio.TimeoutError:
-        thumb_path = None
-        await thumb_msg.edit_text("⏰ No thumbnail received. Proceeding without one.")
+    if file.file_size > 2000 * 1024 * 1024:
+        return await message.reply_text("Sorry, this bot doesn't support uploading files bigger than 2GB")
 
-    # Ask for subtitle preference
-    subtitle_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Default Subtitle", callback_data="subtitle_default"),
-            InlineKeyboardButton("Custom Subtitle", callback_data="subtitle_custom"),
-        ],
-        [
-            InlineKeyboardButton("No Subtitle", callback_data="subtitle_none")
-        ]
+    # Ask if user wants thumbnail
+    thumb_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("With Thumbnail", callback_data="with_thumb")],
+        [InlineKeyboardButton("Without Thumbnail", callback_data="without_thumb")]
     ])
     
-    sub_msg = await message.reply_text(
-        "**📝 Choose subtitle option:**\n\n"
-        "• Default: Adds 'MOHAN' for first 3 seconds\n"
-        "• Custom: You provide subtitle file (.srt/.ass)\n"
-        "• None: Original file without subtitles",
-        reply_markup=subtitle_keyboard
+    thumb_msg = await message.reply_text(
+        "**Do you want to add a thumbnail?**",
+        reply_markup=thumb_keyboard
     )
-    
-    # Initialize variables
-    subtitle_path = None
-    choice = None
-    
+
     try:
-        # Wait for user response (60 seconds timeout)
-        wait_msg = await client.listen(
+        # Wait for user's thumbnail choice
+        thumb_response = await client.listen(
             chat_id=message.chat.id,
-            timeout=60,
-            filters=(filters.callback_query | 
-                   (filters.document & filters.reply & 
-                   (filters.regex(r'\.srt$') | filters.regex(r'\.ass$'))))
+            filters=filters.callback_query,
+            timeout=30
         )
+        await thumb_msg.delete()
         
-        if isinstance(wait_msg, CallbackQuery):
-            # User selected an option from the keyboard
-            choice = user_choices.get(user_id, {}).get("subtitle")
+        if thumb_response.data == "with_thumb":
+            # Ask for custom thumbnail
+            thumb_ask = await message.reply_text(
+                "**Please send a custom thumbnail (as photo, not document):**",
+                reply_markup=ForceReply(True)
+            )
             
-            # If custom subtitle selected, wait for the file
-            if choice == "custom":
-                custom_sub_msg = await message.reply_text(
-                    "📁 Please send your subtitle file (.srt or .ass format):",
-                    reply_markup=ForceReply(True)
+            try:
+                thumb_msg = await client.listen(
+                    chat_id=message.chat.id,
+                    filters=filters.photo & filters.reply,
+                    timeout=30
                 )
-                try:
-                    subtitle_msg = await client.listen(
-                        chat_id=message.chat.id,
-                        filters=(filters.document & filters.reply & 
-                               (filters.regex(r'\.srt$') | filters.regex(r'\.ass$'))),
-                        timeout=60
-                    )
-                    subtitle_path = await client.download_media(subtitle_msg.document)
-                    await custom_sub_msg.delete()
-                except asyncio.TimeoutError:
-                    await custom_sub_msg.edit_text("⏰ No subtitle received. Using default instead.")
-                    choice = "default"
-                    
+                thumb_path = await client.download_media(thumb_msg.photo)
+                width, height, thumb_path = await fix_thumb(thumb_path)
+                user_thumbnails[message.chat.id] = thumb_path
+                await thumb_ask.delete()
+            except asyncio.TimeoutError:
+                await thumb_ask.edit_text("⏰ No thumbnail received. Proceeding without one.")
+                user_thumbnails[message.chat.id] = None
         else:
-            # User sent a subtitle file directly
-            choice = "custom"
-            subtitle_path = await client.download_media(wait_msg.document)
+            user_thumbnails[message.chat.id] = None
             
     except asyncio.TimeoutError:
-        choice = "default"
-        await message.reply_text("⏰ Timeout. Adding default subtitle.")
-    finally:
-        await sub_msg.delete()
+        await thumb_msg.edit_text("⏰ Timeout. Proceeding without thumbnail.")
+        user_thumbnails[message.chat.id] = None
 
-    # Start processing
+    # Start processing with original filename
     ms = await message.reply_text("🚀 Downloading file...")
     file_path = f"downloads/{message.chat.id}/{filename}"
     
@@ -155,21 +83,14 @@ async def handle_media(client, message):
     except Exception as e:
         return await ms.edit(f"❌ Download failed: {e}")
 
-    # Handle subtitle based on user choice
-    if choice == "default":
-        try:
-            output_path = f"downloads/{message.chat.id}/subbed_{filename}"
-            await add_default_subtitle(path, output_path, "MOHAN", duration=3)
-            path = output_path
-            await ms.edit("✅ Added default subtitle for first 3 seconds")
-        except Exception as e:
-            await ms.edit(f"⚠️ Couldn't add default subtitle: {e}")
-    elif choice == "custom" and subtitle_path:
-        try:
-            # For custom subtitles, we'll handle during upload
-            pass
-        except Exception as e:
-            await ms.edit(f"⚠️ Error processing custom subtitle: {e}")
+    # Add default "MOHAN" subtitle for first 3 seconds
+    try:
+        output_path = f"downloads/{message.chat.id}/subbed_{filename}"
+        await add_default_subtitle(path, output_path, "MOHAN", duration=3)
+        path = output_path
+        await ms.edit("✅ Added default subtitle for first 3 seconds")
+    except Exception as e:
+        await ms.edit(f"⚠️ Couldn't add default subtitle: {e}")
 
     # Get metadata (if enabled)
     _bool_metadata = await jishubotz.get_metadata(message.chat.id)
@@ -198,51 +119,50 @@ async def handle_media(client, message):
             caption = c_caption.format(
                 filename=filename,
                 filesize=humanbytes(file.file_size),
-                duration=convert(duration)
-            )
+                duration=convert(duration))
         except Exception as e:
             caption = f"**{filename}**"
     else:
         caption = f"**{filename}**"
 
-    # Upload as video (default)
+    # Get thumbnail
+    thumb_path = user_thumbnails.get(message.chat.id)
+    if not thumb_path:
+        # Try to get thumbnail from database
+        c_thumb = await jishubotz.get_thumbnail(message.chat.id)
+        if c_thumb:
+            thumb_path = await client.download_media(c_thumb)
+            width, height, thumb_path = await fix_thumb(thumb_path)
+        else:
+            # Try to generate thumbnail from video
+            if file.media == MessageMediaType.VIDEO and duration > 0:
+                try:
+                    thumb_path_ = await take_screen_shot(path, os.path.dirname(path), random.randint(0, duration - 1))
+                    width, height, thumb_path = await fix_thumb(thumb_path_)
+                except:
+                    thumb_path = None
+
+    # Upload as video (for all file types)
     await ms.edit("🎥 Uploading as video...")
     try:
-        if choice == "custom" and subtitle_path:
-            # If custom subtitle exists, send with subtitle
-            await client.send_video(
-                chat_id=message.chat.id,
-                video=metadata_path if _bool_metadata else path,
-                caption=caption,
-                thumb=thumb_path,
-                duration=duration,
-                progress=progress_for_pyrogram,
-                progress_args=("⬆️ Uploading with subtitles...", ms, time.time()),
-                subtitles=subtitle_path
-            )
-        else:
-            # Without custom subtitle (may have default subtitle)
-            await client.send_video(
-                chat_id=message.chat.id,
-                video=metadata_path if _bool_metadata else path,
-                caption=caption,
-                thumb=thumb_path,
-                duration=duration,
-                progress=progress_for_pyrogram,
-                progress_args=("⬆️ Uploading...", ms, time.time())
-            )
+        await client.send_video(
+            chat_id=message.chat.id,
+            video=metadata_path if _bool_metadata else path,
+            caption=caption,
+            thumb=thumb_path,
+            duration=duration,
+            progress=progress_for_pyrogram,
+            progress_args=("⬆️ Uploading...", ms, time.time()))
     except Exception as e:
         await ms.edit(f"❌ Upload failed: {e}")
     finally:
         # Cleanup
         if thumb_path and os.path.exists(thumb_path):
             os.remove(thumb_path)
-        if subtitle_path and os.path.exists(subtitle_path):
-            os.remove(subtitle_path)
         if os.path.exists(file_path):
             os.remove(file_path)
         if os.path.exists(path) and path != file_path:
             os.remove(path)
-        if user_id in user_choices:
-            del user_choices[user_id]
+        if message.chat.id in user_thumbnails:
+            del user_thumbnails[message.chat.id]
         await ms.delete()
