@@ -1,7 +1,9 @@
 import time
 import os
 import asyncio
-from PIL import Image
+import random
+from PIL import Image, ImageDraw, ImageFont
+import textwrap
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
 from pyrogram.types import Message
@@ -59,7 +61,62 @@ async def take_screen_shot(video_file, output_directory, ttl):
     if os.path.lexists(out_put_file_name):
         return out_put_file_name
     return None
-    
+
+async def generate_text_thumbnail(text, output_directory="downloads/thumbnails"):
+    """Generate a thumbnail image with text centered on a colored background"""
+    try:
+        os.makedirs(output_directory, exist_ok=True)
+        thumb_path = f"{output_directory}/thumb_{time.time()}.jpg"
+        
+        # Image dimensions (YouTube thumbnail standard)
+        width, height = 1280, 720
+        
+        # Generate random but pleasant background color
+        r = random.randint(0, 150)
+        g = random.randint(0, 150)
+        b = random.randint(0, 150)
+        
+        # Create image with background
+        image = Image.new("RGB", (width, height), (r, g, b))
+        draw = ImageDraw.Draw(image)
+        
+        # Try to use a nice font (fallback to default if not available)
+        try:
+            font = ImageFont.truetype("arial.ttf", 80)
+        except:
+            try:
+                font = ImageFont.truetype("arialbd.ttf", 80)
+            except:
+                font = ImageFont.load_default()
+        
+        # Calculate text size and position
+        text_width, text_height = draw.textsize(text, font=font)
+        while text_width > width - 40 and font.size > 20:
+            font = ImageFont.truetype(font.path, font.size - 5)
+            text_width, text_height = draw.textsize(text, font=font)
+        
+        # Wrap text if needed
+        wrapped_text = textwrap.wrap(text, width=15)
+        y_text = (height - (text_height * len(wrapped_text))) // 2
+        
+        # Draw each line of text
+        for line in wrapped_text:
+            text_width, text_height = draw.textsize(line, font=font)
+            draw.text(
+                ((width - text_width) // 2, y_text),
+                line,
+                font=font,
+                fill=(255, 255, 255)  # White text
+            )
+            y_text += text_height
+        
+        # Save the thumbnail
+        image.save(thumb_path, "JPEG", quality=95)
+        return thumb_path
+        
+    except Exception as e:
+        print(f"Error generating text thumbnail: {e}")
+        return None
     
 async def add_metadata(input_path, output_path, metadata, ms):
     try:
@@ -97,13 +154,3 @@ async def add_metadata(input_path, output_path, metadata, ms):
         print(f"Error occurred while adding metadata: {str(e)}")
         await ms.edit("<i>An Error Occurred While Adding Metadata To Your File ❌</i>")
         return None
-
-
-
-
-
-
-# Jishu Developer 
-# Don't Remove Credit 🥺
-# Telegram Channel @JishuBotz & @Madflix_Bots
-# Developer @JishuDeveloper
