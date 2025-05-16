@@ -3,136 +3,143 @@ from pyrogram.enums import MessageMediaType
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from hachoir.metadata import extractMetadata
-from helper.ffmpeg import fix_thumb, take_screen_shot, add_metadata, add_default_subtitle
+from helper.ffmpeg import fix_thumb, take_screen_shot, add_metadata
 from hachoir.parser import createParser
-from helper.utils import progress_for_pyrogram, convert, humanbytes
+from helper.utils import progress_for_pyrogram, convert, humanbytes, add_prefix_suffix
 from helper.database import jishubotz
 from asyncio import sleep
 from PIL import Image
-import os
-import time
-import random
-import asyncio
+import os, time, re, random, asyncio
+
 
 @Client.on_message(filters.private & (filters.document | filters.audio | filters.video))
-async def handle_media(client, message):
+async def rename_start(client, message):
     file = getattr(message, message.media.value)
-    filename = file.file_name
-    
+    filename = file.file_name  
     if file.file_size > 2000 * 1024 * 1024:
-        return await message.reply_text("Sorry, this bot doesn't support uploading files bigger than 2GB")
+         return await message.reply_text("Sorry Bro This Bot Doesn't Support Uploading Files Bigger Than 2GB")
 
-    # Always ask for custom thumbnail
-    thumb_msg = await message.reply_text(
-        "**Please send a custom thumbnail (as photo, not document):**\n"
-        "⏳ Waiting for 30 seconds...",
+    # Ask for thumbnail for every file type
+    await message.reply_text(
+        text="**Please send a thumbnail photo for this file**",
+        reply_to_message_id=message.id,
         reply_markup=ForceReply(True)
     )
+
+
+async def process_upload(client, message, filename, thumb=None):
+    # Creating Directory for Metadata
+    if not os.path.isdir("Metadata"):
+        os.mkdir("Metadata")
+        
+    # Extracting necessary information    
+    prefix = await jishubotz.get_prefix(message.chat.id)
+    suffix = await jishubotz.get_suffix(message.chat.id)
+
+    try:
+        new_filename = add_prefix_suffix(filename, prefix, suffix)
+    except Exception as e:
+        return await message.reply_text(f"Something Went Wrong Can't Able To Set Prefix Or Suffix 🥺 \n\n**Contact My Creator :** @CallAdminRobot\n\n**Error :** `{e}`")
     
-    thumb_path = None
-    try:
-        thumb_response = await client.listen(
-            chat_id=message.chat.id,
-            filters=filters.photo & filters.reply,
-            timeout=30
-        )
-        thumb_path = await client.download_media(thumb_response.photo)
-        width, height, thumb_path = await fix_thumb(thumb_path)
-        await thumb_msg.delete()
-    except asyncio.TimeoutError:
-        await thumb_msg.edit_text("⏰ No thumbnail received. Proceeding without one.")
-    except Exception as e:
-        await thumb_msg.edit_text(f"❌ Error processing thumbnail: {e}")
+    file_path = f"downloads/{message.chat.id}/{new_filename}"
+    file = message
 
-    # Start processing with original filename
-    ms = await message.reply_text("🚀 Downloading file...")
-    file_path = f"downloads/{message.chat.id}/{filename}"
+    ms = await message.reply_text("🚀 Try To Download...  ⚡")    
+    try:
+        path = await client.download_media(message=file, file_name=file_path, progress=progress_for_pyrogram, progress_args=("🚀 Try To Downloading...  ⚡", ms, time.time()))                    
+    except Exception as e:
+        return await ms.edit(e)
     
-    try:
-        path = await client.download_media(
-            message=message,
-            file_name=file_path,
-            progress=progress_for_pyrogram,
-            progress_args=("📥 Downloading...", ms, time.time())
-        )
-    except Exception as e:
-        return await ms.edit(f"❌ Download failed: {e}")
 
-    # Add default "MOHAN" subtitle for first 3 seconds
-    try:
-        output_path = f"downloads/{message.chat.id}/subbed_{filename}"
-        await add_default_subtitle(path, output_path, "MOHAN", duration=3)
-        path = output_path
-        await ms.edit("✅ Added default subtitle for first 3 seconds")
-    except Exception as e:
-        await ms.edit(f"⚠️ Couldn't add default subtitle: {e}")
-
-    # Get metadata (if enabled)
-    _bool_metadata = await jishubotz.get_metadata(message.chat.id)
+    # Metadata Adding Code
+    _bool_metadata = await jishubotz.get_metadata(message.chat.id) 
+    
     if _bool_metadata:
         metadata = await jishubotz.get_metadata_code(message.chat.id)
-        metadata_path = f"Metadata/{filename}"
+        metadata_path = f"Metadata/{new_filename}"
         await add_metadata(path, metadata_path, metadata, ms)
     else:
-        await ms.edit("⏳ Preparing to upload...")
+        await ms.edit("⏳ Mode Changing...  ⚡")
 
-    # Extract duration (for videos/audio)
     duration = 0
     try:
         parser = createParser(file_path)
         metadata = extractMetadata(parser)
         if metadata.has("duration"):
-            duration = metadata.get('duration').seconds
-        parser.close()
+           duration = metadata.get('duration').seconds
+        parser.close()   
     except:
         pass
-
-    # Prepare caption
+        
+    ph_path = thumb
+    user_id = int(message.chat.id) 
+    media = getattr(file, file.media.value)
     c_caption = await jishubotz.get_caption(message.chat.id)
+    c_thumb = await jishubotz.get_thumbnail(message.chat.id)
+
     if c_caption:
-        try:
-            caption = c_caption.format(
-                filename=filename,
-                filesize=humanbytes(file.file_size),
-                duration=convert(duration)
-            )
-        except Exception as e:
-            caption = f"**{filename}**"
+         try:
+             caption = c_caption.format(filename=new_filename, filesize=humanbytes(media.file_size), duration=convert(duration))
+         except Exception as e:
+             return await ms.edit(text=f"Your Caption Error Except Keyword Argument: ({e})")             
     else:
-        caption = f"**{filename}**"
+         caption = f"**{new_filename}**"
+ 
+    if (media.thumbs or c_thumb or thumb):
+         if c_thumb:
+             ph_path = await client.download_media(c_thumb)
+             width, height, ph_path = await fix_thumb(ph_path)
+         elif thumb:
+             ph_path = await client.download_media(thumb)
+             width, height, ph_path = await fix_thumb(ph_path)
+         else:
+             try:
+                 ph_path_ = await take_screen_shot(file_path, os.path.dirname(os.path.abspath(file_path)), random.randint(0, duration - 1))
+                 width, height, ph_path = await fix_thumb(ph_path_)
+             except Exception as e:
+                 ph_path = None
+                 print(e)  
 
-    # If no custom thumbnail, try to get from database or generate
-    if not thumb_path:
-        c_thumb = await jishubotz.get_thumbnail(message.chat.id)
-        if c_thumb:
-            thumb_path = await client.download_media(c_thumb)
-            width, height, thumb_path = await fix_thumb(thumb_path)
-        elif file.media == MessageMediaType.VIDEO and duration > 0:
-            try:
-                thumb_path = await take_screen_shot(path, os.path.dirname(path), random.randint(0, duration - 1))
-                width, height, thumb_path = await fix_thumb(thumb_path)
-            except:
-                thumb_path = None
 
-    # Upload as video (for all file types)
-    await ms.edit("🎥 Uploading as video...")
+    await ms.edit("💠 Try To Upload...  ⚡")
     try:
+        # Upload all files as videos
         await client.send_video(
-            chat_id=message.chat.id,
-            video=metadata_path if _bool_metadata else path,
+            message.chat.id,
+            video=metadata_path if _bool_metadata else file_path,
             caption=caption,
-            thumb=thumb_path,
+            thumb=ph_path,
             duration=duration,
             progress=progress_for_pyrogram,
-            progress_args=("⬆️ Uploading...", ms, time.time()))
-    except Exception as e:
-        await ms.edit(f"❌ Upload failed: {e}")
-    finally:
-        # Cleanup
-        if thumb_path and os.path.exists(thumb_path):
-            os.remove(thumb_path)
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        if os.path.exists(path) and path != file_path:
-            os.remove(path)
-        await ms.delete()
+            progress_args=("💠 Try To Uploading...  ⚡", ms, time.time()))
+
+    except Exception as e:          
+        os.remove(file_path)
+        if ph_path:
+            os.remove(ph_path)
+        return await ms.edit(f"**Error :** `{e}`")    
+ 
+    await ms.delete() 
+    if ph_path:
+        os.remove(ph_path)
+    if file_path:
+        os.remove(file_path)
+
+
+@Client.on_message(filters.private & filters.reply)
+async def refunc(client, message):
+    reply_message = message.reply_to_message
+    if (reply_message.reply_markup) and isinstance(reply_message.reply_markup, ForceReply):
+        # This is a reply to thumbnail request
+        if reply_message.text and "thumbnail" in reply_message.text.lower():
+            if not message.photo:
+                return await message.reply_text("Please send a valid photo for thumbnail")
+            
+            original_message = await client.get_messages(
+                message.chat.id,
+                reply_message.reply_to_message.id
+            )
+            file = getattr(original_message, original_message.media.value)
+            await process_upload(client, original_message, file.file_name, thumb=message)
+            await message.delete()
+            await reply_message.delete()
