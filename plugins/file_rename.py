@@ -104,7 +104,7 @@ async def handle_media(client, message):
             timeout=60,
             filters=(filters.callback_query | 
                    (filters.document & filters.reply & 
-                   (filters.regex(r'\.srt$') | filters.regex(r'\.ass$')))
+                   (filters.regex(r'\.srt$') | filters.regex(r'\.ass$'))))
         )
         
         if isinstance(wait_msg, CallbackQuery):
@@ -120,8 +120,8 @@ async def handle_media(client, message):
                 try:
                     subtitle_msg = await client.listen(
                         chat_id=message.chat.id,
-                        filters=filters.document & filters.reply & 
-                               (filters.regex(r'\.srt$') | filters.regex(r'\.ass$')),
+                        filters=(filters.document & filters.reply & 
+                               (filters.regex(r'\.srt$') | filters.regex(r'\.ass$'))),
                         timeout=60
                     )
                     subtitle_path = await client.download_media(subtitle_msg.document)
