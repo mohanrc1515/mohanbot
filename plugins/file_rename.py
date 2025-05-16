@@ -9,7 +9,11 @@ from helper.utils import progress_for_pyrogram, convert, humanbytes, add_prefix_
 from helper.database import jishubotz
 from asyncio import sleep
 from PIL import Image
-import os, time, re, random, asyncio
+import os
+import time
+import re
+import random
+import asyncio
 
 # Dictionary to store user choices
 user_choices = {}
@@ -101,6 +105,7 @@ async def handle_media(client, message):
             filters=(filters.callback_query | 
                    (filters.document & filters.reply & 
                    (filters.regex(r'\.srt$') | filters.regex(r'\.ass$')))
+        )
         
         if isinstance(wait_msg, CallbackQuery):
             # User selected an option from the keyboard
@@ -145,7 +150,8 @@ async def handle_media(client, message):
             message=message,
             file_name=file_path,
             progress=progress_for_pyrogram,
-            progress_args=("📥 Downloading...", ms, time.time()))
+            progress_args=("📥 Downloading...", ms, time.time())
+        )
     except Exception as e:
         return await ms.edit(f"❌ Download failed: {e}")
 
@@ -192,7 +198,8 @@ async def handle_media(client, message):
             caption = c_caption.format(
                 filename=filename,
                 filesize=humanbytes(file.file_size),
-                duration=convert(duration))
+                duration=convert(duration)
+            )
         except Exception as e:
             caption = f"**{filename}**"
     else:
@@ -211,7 +218,8 @@ async def handle_media(client, message):
                 duration=duration,
                 progress=progress_for_pyrogram,
                 progress_args=("⬆️ Uploading with subtitles...", ms, time.time()),
-                subtitles=subtitle_path)
+                subtitles=subtitle_path
+            )
         else:
             # Without custom subtitle (may have default subtitle)
             await client.send_video(
@@ -221,7 +229,8 @@ async def handle_media(client, message):
                 thumb=thumb_path,
                 duration=duration,
                 progress=progress_for_pyrogram,
-                progress_args=("⬆️ Uploading...", ms, time.time()))
+                progress_args=("⬆️ Uploading...", ms, time.time())
+            )
     except Exception as e:
         await ms.edit(f"❌ Upload failed: {e}")
     finally:
