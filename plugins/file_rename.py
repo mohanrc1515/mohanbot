@@ -25,20 +25,38 @@ async def handle_media(client, message):
         "⚠️ Send as a photo (not as a document).\n"
         "⏳ Waiting for 60 seconds...",
         reply_markup=ForceReply(True)
-    )
-
+    
     try:
         # Wait for thumbnail (60 seconds timeout)
         thumbnail_msg = await client.listen(
             chat_id=message.chat.id,
             filters=filters.photo & filters.reply,
-            timeout=60
-        )
+            timeout=60)
         thumb_path = await client.download_media(thumbnail_msg.photo)
         width, height, thumb_path = await fix_thumb(thumb_path)
     except asyncio.TimeoutError:
         thumb_path = None
         await message.reply_text("⏰ No thumbnail received. Proceeding without one.")
+
+    # Ask for subtitle
+    await message.reply_text(
+        "**Do you want to add external subtitles to this file?**\n\n"
+        "If yes, please send the subtitle file (.srt or .ass format).\n"
+        "If not, just wait and I'll proceed without subtitles.\n"
+        "⏳ Waiting for 60 seconds...",
+        reply_markup=ForceReply(True))
+    
+    try:
+        # Wait for subtitle (60 seconds timeout)
+        subtitle_msg = await client.listen(
+            chat_id=message.chat.id,
+            filters=(filters.document & filters.reply) & 
+                   (filters.regex(r'\.srt$') | filters.regex(r'\.ass$')),
+            timeout=60)
+        subtitle_path = await client.download_media(subtitle_msg.document)
+    except asyncio.TimeoutError:
+        subtitle_path = None
+        await message.reply_text("⏰ No subtitle received. Proceeding without subtitles.")
 
     # Start processing (default: upload as video)
     ms = await message.reply_text("🚀 Downloading file...")
@@ -49,8 +67,7 @@ async def handle_media(client, message):
             message=message,
             file_name=file_path,
             progress=progress_for_pyrogram,
-            progress_args=("📥 Downloading...", ms, time.time())
-        )
+            progress_args=("📥 Downloading...", ms, time.time()))
     except Exception as e:
         return await ms.edit(f"❌ Download failed: {e}")
 
@@ -81,8 +98,7 @@ async def handle_media(client, message):
             caption = c_caption.format(
                 filename=filename,
                 filesize=humanbytes(file.file_size),
-                duration=convert(duration)
-            )
+                duration=convert(duration))
         except Exception as e:
             caption = f"**{filename}**"
     else:
@@ -91,21 +107,35 @@ async def handle_media(client, message):
     # Upload as video (default)
     await ms.edit("🎥 Uploading as video...")
     try:
-        await client.send_video(
-            chat_id=message.chat.id,
-            video=metadata_path if _bool_metadata else file_path,
-            caption=caption,
-            thumb=thumb_path,
-            duration=duration,
-            progress=progress_for_pyrogram,
-            progress_args=("⬆️ Uploading...", ms, time.time())
-        )
+        if subtitle_path:
+            # If subtitle exists, send with subtitle
+            await client.send_video(
+                chat_id=message.chat.id,
+                video=metadata_path if _bool_metadata else file_path,
+                caption=caption,
+                thumb=thumb_path,
+                duration=duration,
+                progress=progress_for_pyrogram,
+                progress_args=("⬆️ Uploading with subtitles...", ms, time.time()),
+                subtitles=subtitle_path)
+        else:
+            # Without subtitle
+            await client.send_video(
+                chat_id=message.chat.id,
+                video=metadata_path if _bool_metadata else file_path,
+                caption=caption,
+                thumb=thumb_path,
+                duration=duration,
+                progress=progress_for_pyrogram,
+                progress_args=("⬆️ Uploading...", ms, time.time()))
     except Exception as e:
         await ms.edit(f"❌ Upload failed: {e}")
     finally:
         # Cleanup
         if thumb_path and os.path.exists(thumb_path):
             os.remove(thumb_path)
+        if subtitle_path and os.path.exists(subtitle_path):
+            os.remove(subtitle_path)
         if os.path.exists(file_path):
             os.remove(file_path)
         await ms.delete()
