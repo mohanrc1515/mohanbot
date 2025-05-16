@@ -37,7 +37,6 @@ async def rename_start(client, message):
         pass
 
 
-
 @Client.on_message(filters.private & filters.reply)
 async def refunc(client, message):
     reply_message = message.reply_to_message
@@ -55,17 +54,85 @@ async def refunc(client, message):
             new_name = new_name + "." + extn
         await reply_message.delete()
 
-        button = [[InlineKeyboardButton("📁 Document",callback_data = "upload_document")]]
-        if file.media in [MessageMediaType.VIDEO, MessageMediaType.DOCUMENT]:
-            button.append([InlineKeyboardButton("🎥 Video", callback_data = "upload_video")])
-        elif file.media == MessageMediaType.AUDIO:
-            button.append([InlineKeyboardButton("🎵 Audio", callback_data = "upload_audio")])
-        await message.reply(
-            text=f"**Select The Output File Type**\n\n**File Name :-** `{new_name}`",
-            reply_to_message_id=file.id,
-            reply_markup=InlineKeyboardMarkup(button)
+        # Ask for thumbnail
+        await message.reply_text(
+            text="**Please send a thumbnail image for this file** (send as photo)\n\n"
+                 "Send /skip if you don't want to add a thumbnail",
+            reply_to_message_id=file.id
         )
+        
+        # Store the filename in user data to use after thumbnail is received
+        client.user_data[message.from_user.id] = {
+            "new_name": new_name,
+            "file_message_id": file.id
+        }
 
+
+@Client.on_message(filters.private & filters.photo)
+async def receive_thumbnail(client, message):
+    user_id = message.from_user.id
+    if user_id not in client.user_data:
+        return
+    
+    data = client.user_data[user_id]
+    new_name = data["new_name"]
+    file_message_id = data["file_message_id"]
+    
+    # Download the thumbnail
+    thumb_path = f"downloads/{user_id}_thumb.jpg"
+    await message.download(file_name=thumb_path)
+    
+    # Get the file message
+    file = await client.get_messages(message.chat.id, file_message_id)
+    
+    # Show upload options
+    button = [[InlineKeyboardButton("📁 Document", callback_data="upload_document")]]
+    if file.media in [MessageMediaType.VIDEO, MessageMediaType.DOCUMENT]:
+        button.append([InlineKeyboardButton("🎥 Video", callback_data="upload_video")])
+    elif file.media == MessageMediaType.AUDIO:
+        button.append([InlineKeyboardButton("🎵 Audio", callback_data="upload_audio")])
+    
+    await message.reply(
+        text=f"**Select The Output File Type**\n\n**File Name :-** `{new_name}`\n\n"
+             "✅ Thumbnail received",
+        reply_to_message_id=file.id,
+        reply_markup=InlineKeyboardMarkup(button)
+    )
+    
+    # Store thumbnail path in user data
+    client.user_data[user_id]["thumb_path"] = thumb_path
+    client.user_data[user_id]["thumb_message_id"] = message.id
+
+
+@Client.on_message(filters.private & filters.command("skip"))
+async def skip_thumbnail(client, message):
+    user_id = message.from_user.id
+    if user_id not in client.user_data:
+        return
+    
+    data = client.user_data[user_id]
+    new_name = data["new_name"]
+    file_message_id = data["file_message_id"]
+    
+    # Get the file message
+    file = await client.get_messages(message.chat.id, file_message_id)
+    
+    # Show upload options
+    button = [[InlineKeyboardButton("📁 Document", callback_data="upload_document")]]
+    if file.media in [MessageMediaType.VIDEO, MessageMediaType.DOCUMENT]:
+        button.append([InlineKeyboardButton("🎥 Video", callback_data="upload_video")])
+    elif file.media == MessageMediaType.AUDIO:
+        button.append([InlineKeyboardButton("🎵 Audio", callback_data="upload_audio")])
+    
+    await message.reply(
+        text=f"**Select The Output File Type**\n\n**File Name :-** `{new_name}`\n\n"
+             "⏩ Thumbnail skipped",
+        reply_to_message_id=file.id,
+        reply_markup=InlineKeyboardMarkup(button)
+    )
+    
+    # Mark that no thumbnail was provided
+    client.user_data[user_id]["thumb_path"] = None
 
 
 @Client.on_callback_query(filters.regex("upload"))
@@ -75,9 +142,17 @@ async def doc(bot, update):
         os.mkdir("Metadata")
         
     # Extracting necessary information    
+    user_id = update.from_user.id
+    if user_id not in bot.user_data:
+        return await update.message.edit("Session expired. Please start over.")
+    
+    data = bot.user_data[user_id]
+    new_name = data["new_name"]
+    file_message_id = data["file_message_id"]
+    thumb_path = data.get("thumb_path")
+    
     prefix = await jishubotz.get_prefix(update.message.chat.id)
     suffix = await jishubotz.get_suffix(update.message.chat.id)
-    new_name = update.message.text
     new_filename_ = new_name.split(":-")[1]
 
     try:
@@ -86,15 +161,14 @@ async def doc(bot, update):
         return await update.message.edit(f"Something Went Wrong Can't Able To Set Prefix Or Suffix 🥺 \n\n**Contact My Creator :** @CallAdminRobot\n\n**Error :** `{e}`")
     
     file_path = f"downloads/{update.from_user.id}/{new_filename}"
-    file = update.message.reply_to_message
+    file = await bot.get_messages(update.message.chat.id, file_message_id)
 
     ms = await update.message.edit("🚀 Try To Download...  ⚡")    
     try:
-     	path = await bot.download_media(message=file, file_name=file_path, progress=progress_for_pyrogram,progress_args=("🚀 Try To Downloading...  ⚡", ms, time.time()))                    
+        path = await bot.download_media(message=file, file_name=file_path, progress=progress_for_pyrogram, progress_args=("🚀 Try To Downloading...  ⚡", ms, time.time()))                    
     except Exception as e:
-     	return await ms.edit(e)
+        return await ms.edit(e)
     
-
     # Metadata Adding Code
     _bool_metadata = await jishubotz.get_metadata(update.message.chat.id) 
     
@@ -110,37 +184,39 @@ async def doc(bot, update):
         parser = createParser(file_path)
         metadata = extractMetadata(parser)
         if metadata.has("duration"):
-           duration = metadata.get('duration').seconds
+            duration = metadata.get('duration').seconds
         parser.close()   
     except:
         pass
         
-    ph_path = None
-    user_id = int(update.message.chat.id) 
     media = getattr(file, file.media.value)
     c_caption = await jishubotz.get_caption(update.message.chat.id)
-    c_thumb = await jishubotz.get_thumbnail(update.message.chat.id)
 
     if c_caption:
-         try:
-             caption = c_caption.format(filename=new_filename, filesize=humanbytes(media.file_size), duration=convert(duration))
-         except Exception as e:
-             return await ms.edit(text=f"Your Caption Error Except Keyword Argument: ({e})")             
+        try:
+            caption = c_caption.format(filename=new_filename, filesize=humanbytes(media.file_size), duration=convert(duration))
+        except Exception as e:
+            return await ms.edit(text=f"Your Caption Error Except Keyword Argument: ({e})")             
     else:
-         caption = f"**{new_filename}**"
+        caption = f"**{new_filename}**"
  
-    if (media.thumbs or c_thumb):
-         if c_thumb:
-             ph_path = await bot.download_media(c_thumb)
-             width, height, ph_path = await fix_thumb(ph_path)
-         else:
-             try:
-                 ph_path_ = await take_screen_shot(file_path, os.path.dirname(os.path.abspath(file_path)), random.randint(0, duration - 1))
-                 width, height, ph_path = await fix_thumb(ph_path_)
-             except Exception as e:
-                 ph_path = None
-                 print(e)  
-
+    # Process thumbnail
+    ph_path = None
+    if thumb_path:
+        try:
+            width, height, ph_path = await fix_thumb(thumb_path)
+        except Exception as e:
+            print(f"Error processing thumbnail: {e}")
+            ph_path = None
+    else:
+        # If no thumbnail was provided, try to generate one for videos
+        if file.media == MessageMediaType.VIDEO:
+            try:
+                ph_path_ = await take_screen_shot(file_path, os.path.dirname(os.path.abspath(file_path)), random.randint(0, duration - 1))
+                width, height, ph_path = await fix_thumb(ph_path_)
+            except Exception as e:
+                ph_path = None
+                print(f"Error generating thumbnail: {e}")
 
     await ms.edit("💠 Try To Upload...  ⚡")
     type = update.data.split("_")[1]
@@ -174,23 +250,17 @@ async def doc(bot, update):
                 progress=progress_for_pyrogram,
                 progress_args=("💠 Try To Uploading...  ⚡", ms, time.time()))
 
-
     except Exception as e:          
         os.remove(file_path)
         if ph_path:
             os.remove(ph_path)
         return await ms.edit(f"**Error :** `{e}`")    
- 
+    
+    # Cleanup
     await ms.delete() 
     if ph_path:
         os.remove(ph_path)
     if file_path:
         os.remove(file_path)
-
-
-
-
-# Jishu Developer 
-# Don't Remove Credit 🥺
-# Telegram Channel @JishuBotz
-# Developer @JishuDeveloper
+    if user_id in bot.user_data:
+        del bot.user_data[user_id]
