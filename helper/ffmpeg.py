@@ -6,7 +6,6 @@ from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
 from pyrogram.types import Message
 
-
 async def fix_thumb(thumb):
     width = 0
     height = 0
@@ -31,7 +30,7 @@ async def fix_thumb(thumb):
                 if width > 320 or height > 320:  # Telegram's recommended thumbnail size
                     img.thumbnail((320, 320))
                 
-                # Save as JPEG
+                # Save as JPEG with quality 95
                 img.save(thumb, "JPEG", quality=95)
                 
                 # Get final dimensions
@@ -42,7 +41,6 @@ async def fix_thumb(thumb):
         thumb = None 
        
     return width, height, thumb
-
 
 async def take_screen_shot(video_file, output_directory, ttl):
     out_put_file_name = f"{output_directory}/{time.time()}.jpg"
@@ -55,8 +53,7 @@ async def take_screen_shot(video_file, output_directory, ttl):
             video_file,
             "-vframes",
             "1",
-            "-q:v",
-            "2",  # Quality level (2-31, lower is better)
+            "-q:v", "2",  # Quality level (2-31, lower is better)
             out_put_file_name
         ]
         process = await asyncio.create_subprocess_exec(
@@ -73,10 +70,9 @@ async def take_screen_shot(video_file, output_directory, ttl):
         print(f"Error taking screenshot: {e}")
         return None
     
-    
 async def add_metadata(input_path, output_path, metadata, ms):
     try:
-        await ms.edit("<i>I Found Metadata, Adding Into Your File ⚡</i>")
+        await ms.edit("<i>Adding metadata to your file...</i>")
         command = [
             'ffmpeg', '-y', '-i', input_path,
             '-map', '0',
@@ -84,7 +80,6 @@ async def add_metadata(input_path, output_path, metadata, ms):
             '-metadata', f'title={metadata}',
             '-metadata', f'author={metadata}',
             '-metadata', f'artist={metadata}',
-            '-metadata', f'comment={metadata}',
             output_path
         ]
         
@@ -96,18 +91,20 @@ async def add_metadata(input_path, output_path, metadata, ms):
         await process.communicate()
         
         if os.path.exists(output_path):
-            await ms.edit("<i>Metadata Added Successfully ✅</i>")
+            await ms.edit("<i>Metadata added successfully</i>")
             return output_path
         else:
-            await ms.edit("<i>Failed To Add Metadata ❌</i>")
+            await ms.edit("<i>Failed to add metadata</i>")
             return None
     except Exception as e:
         print(f"Error adding metadata: {e}")
-        await ms.edit("<i>Metadata Addition Failed ❌</i>")
+        await ms.edit("<i>Error adding metadata</i>")
         return None
 
-
 async def add_default_subtitle(input_path, output_path, text="MOHAN", duration=3):
+    """
+    Adds a default subtitle to the video for the first few seconds
+    """
     try:
         command = [
             'ffmpeg', '-y', '-i', input_path,
