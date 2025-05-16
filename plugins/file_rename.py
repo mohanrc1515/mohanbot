@@ -154,6 +154,7 @@ async def upload_file(bot, update):
                 filename=new_filename,
                 filesize=humanbytes(media.file_size),
                 duration=convert(duration)
+            )
         except Exception as e:
             caption = f"**{new_filename}**"
     else:
