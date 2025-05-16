@@ -19,43 +19,87 @@ async def rename_start(client, message):
     if file.file_size > 2000 * 1024 * 1024:
          return await message.reply_text("Sorry Bro This Bot Doesn't Support Uploading Files Bigger Than 2GB")
 
-    # Ask for thumbnail for every file type
-    await message.reply_text(
-        text="**Please send a thumbnail photo for this file**",
-        reply_to_message_id=message.id,
-        reply_markup=ForceReply(True)
-    )
+    try:
+        await message.reply_text(
+            text=f"**Please Enter New Filename...**\n\n**Old File Name** :- `{filename}`",
+	    reply_to_message_id=message.id,  
+	    reply_markup=ForceReply(True)
+        )       
+        await sleep(30)
+    except FloodWait as e:
+        await sleep(e.value)
+        await message.reply_text(
+            text=f"**Please Enter New Filename**\n\n**Old File Name** :- `{filename}`",
+	    reply_to_message_id=message.id,  
+	    reply_markup=ForceReply(True)
+        )
+    except:
+        pass
 
 
-async def process_upload(client, message, filename, thumb=None):
+
+@Client.on_message(filters.private & filters.reply)
+async def refunc(client, message):
+    reply_message = message.reply_to_message
+    if (reply_message.reply_markup) and isinstance(reply_message.reply_markup, ForceReply):
+        new_name = message.text 
+        await message.delete() 
+        msg = await client.get_messages(message.chat.id, reply_message.id)
+        file = msg.reply_to_message
+        media = getattr(file, file.media.value)
+        if not "." in new_name:
+            if "." in media.file_name:
+                extn = media.file_name.rsplit('.', 1)[-1]
+            else:
+                extn = "mkv"
+            new_name = new_name + "." + extn
+        await reply_message.delete()
+
+        button = [[InlineKeyboardButton("📁 Document",callback_data = "upload_document")]]
+        if file.media in [MessageMediaType.VIDEO, MessageMediaType.DOCUMENT]:
+            button.append([InlineKeyboardButton("🎥 Video", callback_data = "upload_video")])
+        elif file.media == MessageMediaType.AUDIO:
+            button.append([InlineKeyboardButton("🎵 Audio", callback_data = "upload_audio")])
+        await message.reply(
+            text=f"**Select The Output File Type**\n\n**File Name :-** `{new_name}`",
+            reply_to_message_id=file.id,
+            reply_markup=InlineKeyboardMarkup(button)
+        )
+
+
+
+@Client.on_callback_query(filters.regex("upload"))
+async def doc(bot, update):    
     # Creating Directory for Metadata
     if not os.path.isdir("Metadata"):
         os.mkdir("Metadata")
         
     # Extracting necessary information    
-    prefix = await jishubotz.get_prefix(message.chat.id)
-    suffix = await jishubotz.get_suffix(message.chat.id)
+    prefix = await jishubotz.get_prefix(update.message.chat.id)
+    suffix = await jishubotz.get_suffix(update.message.chat.id)
+    new_name = update.message.text
+    new_filename_ = new_name.split(":-")[1]
 
     try:
-        new_filename = add_prefix_suffix(filename, prefix, suffix)
+        new_filename = add_prefix_suffix(new_filename_, prefix, suffix)
     except Exception as e:
-        return await message.reply_text(f"Something Went Wrong Can't Able To Set Prefix Or Suffix 🥺 \n\n**Contact My Creator :** @CallAdminRobot\n\n**Error :** `{e}`")
+        return await update.message.edit(f"Something Went Wrong Can't Able To Set Prefix Or Suffix 🥺 \n\n**Contact My Creator :** @CallAdminRobot\n\n**Error :** `{e}`")
     
-    file_path = f"downloads/{message.chat.id}/{new_filename}"
-    file = message
+    file_path = f"downloads/{update.from_user.id}/{new_filename}"
+    file = update.message.reply_to_message
 
-    ms = await message.reply_text("🚀 Try To Download...  ⚡")    
+    ms = await update.message.edit("🚀 Try To Download...  ⚡")    
     try:
-        path = await client.download_media(message=file, file_name=file_path, progress=progress_for_pyrogram, progress_args=("🚀 Try To Downloading...  ⚡", ms, time.time()))                    
+     	path = await bot.download_media(message=file, file_name=file_path, progress=progress_for_pyrogram,progress_args=("🚀 Try To Downloading...  ⚡", ms, time.time()))                    
     except Exception as e:
-        return await ms.edit(e)
+     	return await ms.edit(e)
     
 
     # Metadata Adding Code
-    _bool_metadata = await jishubotz.get_metadata(message.chat.id) 
+    _bool_metadata = await jishubotz.get_metadata(update.message.chat.id) 
     
     if _bool_metadata:
-        metadata = await jishubotz.get_metadata_code(message.chat.id)
+        metadata = await jishubotz.get_metadata_code(update.message.chat.id)
         metadata_path = f"Metadata/{new_filename}"
         await add_metadata(path, metadata_path, metadata, ms)
     else:
@@ -71,11 +115,11 @@ async def process_upload(client, message, filename, thumb=None):
     except:
         pass
         
-    ph_path = thumb
-    user_id = int(message.chat.id) 
+    ph_path = None
+    user_id = int(update.message.chat.id) 
     media = getattr(file, file.media.value)
-    c_caption = await jishubotz.get_caption(message.chat.id)
-    c_thumb = await jishubotz.get_thumbnail(message.chat.id)
+    c_caption = await jishubotz.get_caption(update.message.chat.id)
+    c_thumb = await jishubotz.get_thumbnail(update.message.chat.id)
 
     if c_caption:
          try:
@@ -85,12 +129,9 @@ async def process_upload(client, message, filename, thumb=None):
     else:
          caption = f"**{new_filename}**"
  
-    if (media.thumbs or c_thumb or thumb):
+    if (media.thumbs or c_thumb):
          if c_thumb:
-             ph_path = await client.download_media(c_thumb)
-             width, height, ph_path = await fix_thumb(ph_path)
-         elif thumb:
-             ph_path = await client.download_media(thumb)
+             ph_path = await bot.download_media(c_thumb)
              width, height, ph_path = await fix_thumb(ph_path)
          else:
              try:
@@ -102,16 +143,37 @@ async def process_upload(client, message, filename, thumb=None):
 
 
     await ms.edit("💠 Try To Upload...  ⚡")
+    type = update.data.split("_")[1]
     try:
-        # Upload all files as videos
-        await client.send_video(
-            message.chat.id,
-            video=metadata_path if _bool_metadata else file_path,
-            caption=caption,
-            thumb=ph_path,
-            duration=duration,
-            progress=progress_for_pyrogram,
-            progress_args=("💠 Try To Uploading...  ⚡", ms, time.time()))
+        if type == "document":
+            await bot.send_document(
+                update.message.chat.id,
+                document=metadata_path if _bool_metadata else file_path,
+                thumb=ph_path, 
+                caption=caption, 
+                progress=progress_for_pyrogram,
+                progress_args=("💠 Try To Uploading...  ⚡", ms, time.time()))
+
+        elif type == "video": 
+            await bot.send_video(
+                update.message.chat.id,
+                video=metadata_path if _bool_metadata else file_path,
+                caption=caption,
+                thumb=ph_path,
+                duration=duration,
+                progress=progress_for_pyrogram,
+                progress_args=("💠 Try To Uploading...  ⚡", ms, time.time()))
+
+        elif type == "audio": 
+            await bot.send_audio(
+                update.message.chat.id,
+                audio=metadata_path if _bool_metadata else file_path,
+                caption=caption,
+                thumb=ph_path,
+                duration=duration,
+                progress=progress_for_pyrogram,
+                progress_args=("💠 Try To Uploading...  ⚡", ms, time.time()))
+
 
     except Exception as e:          
         os.remove(file_path)
@@ -126,20 +188,9 @@ async def process_upload(client, message, filename, thumb=None):
         os.remove(file_path)
 
 
-@Client.on_message(filters.private & filters.reply)
-async def refunc(client, message):
-    reply_message = message.reply_to_message
-    if (reply_message.reply_markup) and isinstance(reply_message.reply_markup, ForceReply):
-        # This is a reply to thumbnail request
-        if reply_message.text and "thumbnail" in reply_message.text.lower():
-            if not message.photo:
-                return await message.reply_text("Please send a valid photo for thumbnail")
-            
-            original_message = await client.get_messages(
-                message.chat.id,
-                reply_message.reply_to_message.id
-            )
-            file = getattr(original_message, original_message.media.value)
-            await process_upload(client, original_message, file.file_name, thumb=message)
-            await message.delete()
-            await reply_message.delete()
+
+
+# Jishu Developer 
+# Don't Remove Credit 🥺
+# Telegram Channel @JishuBotz
+# Developer @JishuDeveloper
