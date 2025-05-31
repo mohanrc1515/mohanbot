@@ -10,20 +10,27 @@ from helper.database import jishubotz
 from asyncio import sleep
 import os, time, random
 
-# Dictionary to store temporary data
-user_data = {}
+# Dictionary to store temporary thumbnails
+temp_thumbnails = {}
 
-@Client.on_message(filters.private & filters.command("start"))
-async def start_command(client, message):
-    # Clear any existing data when user starts fresh
-    user_id = message.from_user.id
-    if user_id in user_data:
-        del user_data[user_id]
+@Client.on_message(filters.private & (filters.document | filters.audio | filters.video))
+async def handle_file_upload(client, message):
+    file = getattr(message, message.media.value)
+    filename = file.file_name  
     
+    if file.file_size > 2000 * 1024 * 1024:
+        return await message.reply_text("Sorry, this bot doesn't support uploading files bigger than 2GB")
+
+    # Store the message reference for later use
+    temp_thumbnails[message.from_user.id] = {
+        'message_id': message.id,
+        'filename': filename
+    }
+
+    # Always ask for thumbnail first
     await message.reply(
-        text="📁 **File Upload Bot**\n\n"
-             "Please send me a thumbnail photo first (send as photo).\n\n"
-             "If you don't want a thumbnail, click /skip",
+        text="Please send me a thumbnail photo for this file (send as photo).\n\n"
+             "If you don't want a thumbnail, just click /skip",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Skip Thumbnail", callback_data="skip_thumbnail")]
         ])
@@ -33,63 +40,31 @@ async def start_command(client, message):
 async def receive_thumbnail(bot, message):
     user_id = message.from_user.id
     
-    # Initialize user data if not exists
-    if user_id not in user_data:
-        user_data[user_id] = {}
+    if user_id not in temp_thumbnails:
+        return await message.reply("Please send a file first, then send the thumbnail")
     
-    # Store the thumbnail message ID
-    user_data[user_id]['thumbnail_id'] = message.id
+    # Store the thumbnail message ID temporarily
+    temp_thumbnails[user_id]['thumbnail_id'] = message.id
     
-    await message.reply(
-        text="✅ Thumbnail received!\n\n"
-             "Now please send me the file you want to upload (video/document/audio)."
-    )
+    # Start processing immediately as video
+    await process_and_upload(bot, user_id, message)
 
 @Client.on_callback_query(filters.regex("skip_thumbnail"))
 async def skip_thumbnail(bot, update):
     user_id = update.from_user.id
     
-    # Initialize user data if not exists
-    if user_id not in user_data:
-        user_data[user_id] = {}
+    if user_id not in temp_thumbnails:
+        return await update.answer("No file found to upload")
     
-    await update.message.edit_text(
-        text="⏩ Thumbnail skipped!\n\n"
-             "Now please send me the file you want to upload (video/document/audio)."
-    )
-
-@Client.on_message(filters.private & (filters.document | filters.audio | filters.video))
-async def handle_file_upload(client, message):
-    user_id = message.from_user.id
-    
-    # Check if user has started the process
-    if user_id not in user_data:
-        return await message.reply("Please send /start first to begin the upload process")
-    
-    file = getattr(message, message.media.value)
-    filename = file.file_name  
-    
-    if file.file_size > 2000 * 1024 * 1024:
-        return await message.reply_text("Sorry, this bot doesn't support uploading files bigger than 2GB")
-
-    # Store the file message reference
-    user_data[user_id]['file_message_id'] = message.id
-    user_data[user_id]['filename'] = filename
-    
-    # Start processing immediately
-    await process_and_upload(client, user_id, message)
+    # Start processing immediately as video without thumbnail
+    await process_and_upload(bot, user_id, update.message)
 
 async def process_and_upload(bot, user_id, message):
-    if user_id not in user_data:
+    if user_id not in temp_thumbnails:
         return
     
-    file_data = user_data[user_id]
-    
-    # Check if file was sent
-    if 'file_message_id' not in file_data:
-        return await message.reply("Please send a file to upload")
-    
-    original_message_id = file_data['file_message_id']
+    file_data = temp_thumbnails[user_id]
+    original_message_id = file_data['message_id']
     filename = file_data['filename']
     
     # Get the original message
@@ -204,7 +179,7 @@ async def process_and_upload(bot, user_id, message):
             os.remove(metadata_path)
         
         # Remove temporary data
-        if user_id in user_data:
-            del user_data[user_id]
+        if user_id in temp_thumbnails:
+            del temp_thumbnails[user_id]
         
         await ms.delete()
