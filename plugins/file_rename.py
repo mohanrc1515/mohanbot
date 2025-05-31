@@ -10,7 +10,7 @@ from helper.database import jishubotz
 from asyncio import sleep
 import os, time, random
 
-# Dictionary to store temporary thumbnails (in-memory, you might want to use a database instead)
+# Dictionary to store temporary thumbnails
 temp_thumbnails = {}
 
 @Client.on_message(filters.private & (filters.document | filters.audio | filters.video))
@@ -27,7 +27,7 @@ async def handle_file_upload(client, message):
         'filename': filename
     }
 
-    # Always ask for thumbnail first
+    # Ask for thumbnail
     await message.reply(
         text="Please send me a thumbnail photo for this file (send as photo).\n\n"
              "If you don't want a thumbnail, just click /skip",
@@ -43,24 +43,11 @@ async def receive_thumbnail(bot, message):
     if user_id not in temp_thumbnails:
         return await message.reply("Please send a file first, then send the thumbnail")
     
-    # Store the thumbnail message ID temporarily
+    # Store the thumbnail message ID
     temp_thumbnails[user_id]['thumbnail_id'] = message.id
     
-    # Show upload options
-    filename = temp_thumbnails[user_id]['filename']
-    original_message_id = temp_thumbnails[user_id]['message_id']
-    
-    buttons = [
-        [InlineKeyboardButton("📁 Document", callback_data="upload_document")],
-        [InlineKeyboardButton("🎥 Video", callback_data="upload_video")],
-        [InlineKeyboardButton("🎵 Audio", callback_data="upload_audio")]
-    ]
-    
-    await message.reply(
-        text=f"Thumbnail received!\n\nNow select the output file type for:\n`{filename}`",
-        reply_to_message_id=original_message_id,
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    # Start processing immediately
+    await process_and_upload(bot, user_id, message)
 
 @Client.on_callback_query(filters.regex("skip_thumbnail"))
 async def skip_thumbnail(bot, update):
@@ -69,27 +56,12 @@ async def skip_thumbnail(bot, update):
     if user_id not in temp_thumbnails:
         return await update.answer("No file found to upload")
     
-    # Show upload options without thumbnail
-    filename = temp_thumbnails[user_id]['filename']
-    original_message_id = temp_thumbnails[user_id]['message_id']
-    
-    buttons = [
-        [InlineKeyboardButton("📁 Document", callback_data="upload_document")],
-        [InlineKeyboardButton("🎥 Video", callback_data="upload_video")],
-        [InlineKeyboardButton("🎵 Audio", callback_data="upload_audio")]
-    ]
-    
-    await update.message.edit_text(
-        text=f"Thumbnail skipped!\n\nSelect the output file type for:\n`{filename}`",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    # Start processing immediately without thumbnail
+    await process_and_upload(bot, user_id, update.message)
 
-@Client.on_callback_query(filters.regex("^upload"))
-async def upload_file(bot, update):
-    user_id = update.from_user.id
-    
+async def process_and_upload(bot, user_id, message):
     if user_id not in temp_thumbnails:
-        return await update.answer("No file found to upload", show_alert=True)
+        return
     
     file_data = temp_thumbnails[user_id]
     original_message_id = file_data['message_id']
@@ -99,7 +71,7 @@ async def upload_file(bot, update):
     try:
         original_message = await bot.get_messages(user_id, original_message_id)
     except:
-        return await update.answer("Original message not found", show_alert=True)
+        return await message.edit("Original message not found")
     
     file = original_message
     media = getattr(file, file.media.value)
@@ -111,12 +83,12 @@ async def upload_file(bot, update):
     try:
         new_filename = add_prefix_suffix(filename, prefix, suffix)
     except Exception as e:
-        return await update.message.edit(f"Error setting prefix/suffix: {e}")
+        return await message.edit(f"Error setting prefix/suffix: {e}")
     
     file_path = f"downloads/{user_id}/{new_filename}"
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     
-    ms = await update.message.edit("🚀 Downloading file...")
+    ms = await message.edit("🚀 Downloading file...")
     
     try:
         path = await bot.download_media(
@@ -182,40 +154,19 @@ async def upload_file(bot, update):
         except Exception as e:
             print(f"Error generating thumbnail: {e}")
     
-    # Start uploading
-    await ms.edit("📤 Uploading file...")
-    upload_type = update.data.split("_")[1]
+    # Start uploading as video
+    await ms.edit("📤 Uploading as video...")
     
     try:
-        if upload_type == "document":
-            await bot.send_document(
-                chat_id=user_id,
-                document=metadata_path if _bool_metadata else file_path,
-                thumb=ph_path,
-                caption=caption,
-                progress=progress_for_pyrogram,
-                progress_args=("📤 Uploading...", ms, time.time())
-            )
-        elif upload_type == "video":
-            await bot.send_video(
-                chat_id=user_id,
-                video=metadata_path if _bool_metadata else file_path,
-                caption=caption,
-                thumb=ph_path,
-                duration=duration,
-                progress=progress_for_pyrogram,
-                progress_args=("📤 Uploading...", ms, time.time())
-            )
-        elif upload_type == "audio":
-            await bot.send_audio(
-                chat_id=user_id,
-                audio=metadata_path if _bool_metadata else file_path,
-                caption=caption,
-                thumb=ph_path,
-                duration=duration,
-                progress=progress_for_pyrogram,
-                progress_args=("📤 Uploading...", ms, time.time())
-            )
+        await bot.send_video(
+            chat_id=user_id,
+            video=metadata_path if _bool_metadata else file_path,
+            caption=caption,
+            thumb=ph_path,
+            duration=duration,
+            progress=progress_for_pyrogram,
+            progress_args=("📤 Uploading...", ms, time.time())
+        )
     except Exception as e:
         await ms.edit(f"Upload failed: {e}")
     finally:
