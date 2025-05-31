@@ -24,7 +24,8 @@ async def handle_file_upload(client, message):
     # Store the message reference for later use
     temp_thumbnails[message.from_user.id] = {
         'message_id': message.id,
-        'filename': filename
+        'filename': filename,
+        'original_message': message  # Store the entire message object
     }
 
     # Always ask for thumbnail first
@@ -43,11 +44,15 @@ async def receive_thumbnail(bot, message):
     if user_id not in temp_thumbnails:
         return await message.reply("Please send a file first, then send the thumbnail")
     
-    # Store the thumbnail message ID temporarily
-    temp_thumbnails[user_id]['thumbnail_id'] = message.id
+    # Store the thumbnail message
+    temp_thumbnails[user_id]['thumbnail'] = message
     
-    # Start processing immediately as video
-    await process_and_upload(bot, user_id, message)
+    # Get the original message data
+    file_data = temp_thumbnails[user_id]
+    original_message = file_data['original_message']
+    
+    # Start processing
+    await process_and_upload(bot, user_id, original_message, thumbnail_message=message)
 
 @Client.on_callback_query(filters.regex("skip_thumbnail"))
 async def skip_thumbnail(bot, update):
@@ -56,22 +61,20 @@ async def skip_thumbnail(bot, update):
     if user_id not in temp_thumbnails:
         return await update.answer("No file found to upload")
     
-    # Start processing immediately as video without thumbnail
-    await process_and_upload(bot, user_id, update.message)
+    # Get the original message data
+    file_data = temp_thumbnails[user_id]
+    original_message = file_data['original_message']
+    
+    # Start processing without thumbnail
+    await process_and_upload(bot, user_id, original_message, thumbnail_message=None)
+    await update.message.delete()
 
-async def process_and_upload(bot, user_id, message):
+async def process_and_upload(bot, user_id, original_message, thumbnail_message=None):
     if user_id not in temp_thumbnails:
         return
     
     file_data = temp_thumbnails[user_id]
-    original_message_id = file_data['message_id']
     filename = file_data['filename']
-    
-    # Get the original message
-    try:
-        original_message = await bot.get_messages(user_id, original_message_id)
-    except:
-        return await message.edit("Original message not found")
     
     file = original_message
     media = getattr(file, file.media.value)
@@ -83,12 +86,12 @@ async def process_and_upload(bot, user_id, message):
     try:
         new_filename = add_prefix_suffix(filename, prefix, suffix)
     except Exception as e:
-        return await message.edit(f"Error setting prefix/suffix: {e}")
+        return await original_message.reply(f"Error setting prefix/suffix: {e}")
     
     file_path = f"downloads/{user_id}/{new_filename}"
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     
-    ms = await message.edit("🚀 Downloading file...")
+    ms = await original_message.reply("🚀 Downloading file...")
     
     try:
         path = await bot.download_media(
@@ -134,10 +137,9 @@ async def process_and_upload(bot, user_id, message):
     
     # Handle thumbnail
     ph_path = None
-    if 'thumbnail_id' in file_data:
+    if thumbnail_message:
         try:
-            thumb_msg = await bot.get_messages(user_id, file_data['thumbnail_id'])
-            ph_path = await bot.download_media(thumb_msg)
+            ph_path = await bot.download_media(thumbnail_message)
             width, height, ph_path = await fix_thumb(ph_path)
         except Exception as e:
             print(f"Error processing thumbnail: {e}")
