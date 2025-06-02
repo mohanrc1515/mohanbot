@@ -7,7 +7,7 @@ class Config(object):
     # pyro client config
     API_ID    = os.environ.get("API_ID", "12655645")
     API_HASH  = os.environ.get("API_HASH", "05c4cafe00b81ed83207bb4365e0053b")
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "7696984863:AAEiUA76NTYiQ2dYlCzxEAaymT_FMnnkKpM") 
+    BOT_TOKEN = os.environ.get("BOT_TOKEN", "5308365042:AAHTEAyeeoaN9dtRaP1-gtgobX6Srdxixpc") 
    
     # database config
     DB_NAME = os.environ.get("DB_NAME","mohan")     
@@ -39,7 +39,7 @@ class Txt(object):
 
 ➻ This Bot Also Supports Custom Thumbnail And Custom Caption.
 
-<b>Bot Is Made By :</b> @Madflix_Bots"""
+<b>Bot Is Made By :</b> MOHAN"""
 
     ABOUT_TXT = """
 ╭───────────────⍟
@@ -90,7 +90,7 @@ class Txt(object):
 
 If You Like My Bots & Projects, You Can 🎁 Donate Me Any Amount From 10 Rs Upto Your Choice.
 
-<b>🛍 UPI ID:</b> `madflixofficial@axl`
+<b>🛍 UPI ID:</b> `ml@axl`
 """
 
 
@@ -98,9 +98,9 @@ If You Like My Bots & Projects, You Can 🎁 Donate Me Any Amount From 10 Rs Upt
 
 For Example :-
 
-<code>By :- @Madflix_Bots</code>
+<code>By :- @Bots</code>
 
-💬 For Any Help Contact @MadflixOfficials
+💬 For Any Help Contact @fficials
 """
 
 
