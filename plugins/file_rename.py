@@ -8,10 +8,14 @@ from hachoir.parser import createParser
 from helper.utils import progress_for_pyrogram, convert, humanbytes, add_prefix_suffix
 from helper.database import jishubotz
 from asyncio import sleep
-import os, time, random
+import os, time, random, subprocess
 
 # Dictionary to store user sessions
 user_sessions = {}
+
+# Constants
+MAX_SIZE = 2 * 1024 * 1024 * 1024  # 2GB in bytes
+SPLIT_SUFFIX = ".part"
 
 @Client.on_message(filters.private & (filters.document | filters.audio | filters.video))
 async def handle_file_upload(client, message):
@@ -24,16 +28,14 @@ async def handle_file_upload(client, message):
     file = getattr(message, message.media.value)
     filename = file.file_name  
     
-    if file.file_size > 2000 * 1024 * 1024:
-        return await message.reply_text("Sorry, this bot doesn't support uploading files bigger than 2GB")
-
     # Store the original message and file info
     user_sessions[user_id] = {
         'original_message': message,
         'filename': filename,
         'file_size': file.file_size,
         'media_type': message.media.value,
-        'state': 'awaiting_thumbnail'
+        'state': 'awaiting_thumbnail',
+        'needs_split': file.file_size > MAX_SIZE
     }
 
     # Ask for thumbnail
@@ -76,6 +78,27 @@ async def skip_thumbnail(bot, update):
     # Process the upload without thumbnail
     await process_upload(bot, user_id)
 
+async def split_large_file(file_path, max_size=MAX_SIZE):
+    """Split large file into parts that are <= max_size bytes"""
+    part_num = 1
+    parts = []
+    base_name = file_path + SPLIT_SUFFIX
+    
+    with open(file_path, 'rb') as f:
+        while True:
+            chunk = f.read(max_size)
+            if not chunk:
+                break
+            
+            part_name = f"{base_name}{part_num:03d}"
+            with open(part_name, 'wb') as part_file:
+                part_file.write(chunk)
+            
+            parts.append(part_name)
+            part_num += 1
+    
+    return parts
+
 async def process_upload(bot, user_id):
     if user_id not in user_sessions:
         return
@@ -85,6 +108,7 @@ async def process_upload(bot, user_id):
     filename = session_data['filename']
     file_size = session_data['file_size']
     media_type = session_data['media_type']
+    needs_split = session_data['needs_split']
     
     try:
         # Prepare paths and variables
@@ -115,15 +139,9 @@ async def process_upload(bot, user_id):
         except Exception as e:
             return await ms.edit(f"❌ Download failed: {e}")
         
-        # Handle metadata if enabled
+        # Handle metadata if enabled (only for non-split files)
         _bool_metadata = await jishubotz.get_metadata(user_id)
         metadata_path = None
-        if _bool_metadata:
-            metadata = await jishubotz.get_metadata_code(user_id)
-            metadata_dir = f"Metadata/{user_id}/{int(time.time())}/"
-            os.makedirs(metadata_dir, exist_ok=True)
-            metadata_path = os.path.join(metadata_dir, new_filename)
-            await add_metadata(path, metadata_path, metadata, ms)
         
         # Get duration for media files
         duration = 0
@@ -181,14 +199,58 @@ async def process_upload(bot, user_id):
                 print(f"⚠️ Error generating thumbnail: {e}")
         
         # Start uploading
-        await ms.edit("📤 Uploading file...")
-        
-        try:
-            # Check file type and upload accordingly
-            video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv']
-            file_ext = os.path.splitext(file_path)[1].lower()
-            
-            if media_type == MessageMediaType.VIDEO or (media_type == MessageMediaType.DOCUMENT and file_ext in video_extensions):
+        if needs_split:
+            await ms.edit("✂️ File is too large, splitting into parts...")
+            try:
+                parts = await split_large_file(file_path)
+                await ms.edit(f"✅ Split into {len(parts)} parts. Starting upload...")
+                
+                for i, part_path in enumerate(parts, 1):
+                    part_caption = f"{caption}\n\nPart {i} of {len(parts)}"
+                    
+                    try:
+                        await bot.send_video(
+                            chat_id=user_id,
+                            video=part_path,
+                            caption=part_caption,
+                            thumb=ph_path,
+                            duration=duration,
+                            progress=progress_for_pyrogram,
+                            progress_args=(f"📤 Uploading part {i}...", ms, time.time())
+                        )
+                    except FloodWait as e:
+                        await ms.edit(f"⏳ Too many requests! Please wait {e.value} seconds before trying again.")
+                        await sleep(e.value)
+                        await bot.send_video(
+                            chat_id=user_id,
+                            video=part_path,
+                            caption=part_caption,
+                            thumb=ph_path,
+                            duration=duration,
+                            progress=progress_for_pyrogram,
+                            progress_args=(f"📤 Uploading part {i}...", ms, time.time())
+                        )
+                    
+                    # Clean up part file after upload
+                    try:
+                        os.remove(part_path)
+                    except:
+                        pass
+                    
+            except Exception as e:
+                await ms.edit(f"❌ Error splitting/uploading file: {str(e)}")
+                raise e
+        else:
+            await ms.edit("📤 Uploading file...")
+            try:
+                # For non-split files, handle metadata if enabled
+                if _bool_metadata:
+                    metadata = await jishubotz.get_metadata_code(user_id)
+                    metadata_dir = f"Metadata/{user_id}/{int(time.time())}/"
+                    os.makedirs(metadata_dir, exist_ok=True)
+                    metadata_path = os.path.join(metadata_dir, new_filename)
+                    await add_metadata(file_path, metadata_path, metadata, ms)
+                
                 await bot.send_video(
                     chat_id=user_id,
                     video=metadata_path if _bool_metadata else file_path,
@@ -198,62 +260,43 @@ async def process_upload(bot, user_id):
                     progress=progress_for_pyrogram,
                     progress_args=("📤 Uploading...", ms, time.time())
                 )
-            elif media_type == MessageMediaType.AUDIO:
-                await bot.send_audio(
-                    chat_id=user_id,
-                    audio=metadata_path if _bool_metadata else file_path,
-                    caption=caption,
-                    thumb=ph_path,
-                    duration=duration,
-                    progress=progress_for_pyrogram,
-                    progress_args=("📤 Uploading...", ms, time.time())
-                )
-            else:
-                await bot.send_document(
-                    chat_id=user_id,
-                    document=metadata_path if _bool_metadata else file_path,
-                    caption=caption,
-                    thumb=ph_path,
-                    progress=progress_for_pyrogram,
-                    progress_args=("📤 Uploading...", ms, time.time())
-                )
-        except FloodWait as e:
-            await ms.edit(f"⏳ Too many requests! Please wait {e.value} seconds before trying again.")
-            await sleep(e.value)
-            return await process_upload(bot, user_id)
-        except Exception as e:
-            await ms.edit(f"❌ Upload failed: {str(e)}")
-            raise e
-        finally:
-            # Clean up
-            def safe_remove(filepath):
-                try:
-                    if filepath and os.path.exists(filepath):
-                        os.remove(filepath)
-                except Exception as e:
-                    print(f"⚠️ Error removing file {filepath}: {e}")
-            
-            safe_remove(ph_path)
-            safe_remove(file_path)
-            safe_remove(metadata_path)
-            
-            # Clean up empty directories
-            def safe_rmdir(dirpath):
-                try:
-                    if dirpath and os.path.exists(dirpath) and not os.listdir(dirpath):
-                        os.rmdir(dirpath)
-                except Exception as e:
-                    print(f"⚠️ Error removing directory {dirpath}: {e}")
-            
-            safe_rmdir(os.path.dirname(file_path))
-            if metadata_path:
-                safe_rmdir(os.path.dirname(metadata_path))
-            
-            # Clear the user session
-            if user_id in user_sessions:
-                del user_sessions[user_id]
-            
-            await ms.delete()
+            except FloodWait as e:
+                await ms.edit(f"⏳ Too many requests! Please wait {e.value} seconds before trying again.")
+                await sleep(e.value)
+                return await process_upload(bot, user_id)
+            except Exception as e:
+                await ms.edit(f"❌ Upload failed: {str(e)}")
+                raise e
+        
+        # Clean up
+        def safe_remove(filepath):
+            try:
+                if filepath and os.path.exists(filepath):
+                    os.remove(filepath)
+            except Exception as e:
+                print(f"⚠️ Error removing file {filepath}: {e}")
+        
+        safe_remove(ph_path)
+        safe_remove(file_path)
+        safe_remove(metadata_path)
+        
+        # Clean up empty directories
+        def safe_rmdir(dirpath):
+            try:
+                if dirpath and os.path.exists(dirpath) and not os.listdir(dirpath):
+                    os.rmdir(dirpath)
+            except Exception as e:
+                print(f"⚠️ Error removing directory {dirpath}: {e}")
+        
+        safe_rmdir(os.path.dirname(file_path))
+        if metadata_path:
+            safe_rmdir(os.path.dirname(metadata_path))
+        
+        # Clear the user session
+        if user_id in user_sessions:
+            del user_sessions[user_id]
+        
+        await ms.delete()
     
     except Exception as e:
         await original_message.reply(f"❌ An error occurred: {str(e)}")
