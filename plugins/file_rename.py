@@ -36,7 +36,7 @@ async def handle_file_upload(client, message):
         text="Please send me a thumbnail photo for this file (send as photo).\n\n"
              "If you don't want a thumbnail, just click /skip",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Skip Thumbnail", callback_data=f"skip_thumbnail_{session_id}")
+            [InlineKeyboardButton("Skip Thumbnail", callback_data=f"skip_thumbnail_{session_id}")]
         ])
     )
 
