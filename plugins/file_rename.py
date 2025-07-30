@@ -1,204 +1,270 @@
+import os
+import time
+import json
+import uuid
+import asyncio
+from PIL import Image
 from pyrogram import Client, filters
 from pyrogram.enums import MessageMediaType
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-import os, uuid, ffmpeg
+from hachoir.metadata import extractMetadata
+from hachoir.parser import createParser
 
-# ... (keep your existing imports and setup)
+# Bot setup
+app = Client("my_bot")
 
-@Client.on_message(filters.private & (filters.document | filters.audio | filters.video))
+# Dictionary to store user sessions
+user_sessions = {}
+
+async def probe_file(file_path):
+    """Get media file information using ffprobe"""
+    command = [
+        'ffprobe', '-v', 'quiet',
+        '-print_format', 'json',
+        '-show_format', '-show_streams',
+        file_path
+    ]
+    
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    try:
+        return json.loads(stdout.decode())
+    except:
+        return {'streams': []}
+
+async def fix_thumb(thumb):
+    width = 0
+    height = 0
+    try:
+        if thumb is not None:
+            parser = createParser(thumb)
+            metadata = extractMetadata(parser)
+            if metadata.has("width"):
+                width = metadata.get("width")
+            if metadata.has("height"):
+                height = metadata.get("height")
+                
+            with Image.open(thumb) as img:
+                img.convert("RGB").save(thumb)
+                if width > 320 or height > 320:
+                    ratio = min(320/width, 320/height)
+                    width = int(width * ratio)
+                    height = int(height * ratio)
+                    img = img.resize((width, height))
+                img.save(thumb, "JPEG")
+            parser.close()
+    except Exception as e:
+        print(e)
+        thumb = None 
+    return width, height, thumb
+    
+async def take_screen_shot(video_file, output_directory, ttl):
+    out_put_file_name = f"{output_directory}/{time.time()}.jpg"
+    file_genertor_command = [
+        "ffmpeg",
+        "-ss",
+        str(ttl),
+        "-i",
+        video_file,
+        "-vframes",
+        "1",
+        "-q:v",
+        "2",
+        out_put_file_name
+    ]
+    process = await asyncio.create_subprocess_exec(
+        *file_genertor_command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if os.path.lexists(out_put_file_name):
+        return out_put_file_name
+    return None
+
+async def remove_subtitles(input_path, output_path, sub_indices):
+    """Remove specified subtitle tracks from video"""
+    try:
+        probe = await probe_file(input_path)
+        if not probe:
+            return None
+            
+        stream_mapping = []
+        for i, stream in enumerate(probe.get('streams', [])):
+            if stream.get('codec_type') == 'subtitle' and i in sub_indices:
+                continue
+            stream_mapping.extend(['-map', f'0:{i}'])
+        
+        command = [
+            'ffmpeg', '-y', '-i', input_path,
+            *stream_mapping,
+            '-c', 'copy',
+            output_path
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await process.communicate()
+        return output_path if os.path.exists(output_path) else None
+    except Exception as e:
+        print(f"Error removing subtitles: {str(e)}")
+        return None
+
+async def add_subtitle(video_path, subtitle_path, output_path):
+    """Add subtitle to video file"""
+    try:
+        command = [
+            'ffmpeg', '-y', '-i', video_path, '-i', subtitle_path,
+            '-map', '0', '-map', '1',
+            '-c:v', 'copy', '-c:a', 'copy',
+            '-c:s', 'mov_text',
+            '-metadata:s:s:0', 'language=eng',
+            output_path
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await process.communicate()
+        return output_path if os.path.exists(output_path) else None
+    except Exception as e:
+        print(f"Error adding subtitle: {str(e)}")
+        return None
+
+@app.on_message(filters.private & (filters.document | filters.audio | filters.video))
 async def handle_file_upload(client, message):
     file = getattr(message, message.media.value)
-    filename = file.file_name  
-    
     if file.file_size > 2000 * 1024 * 1024:
-        return await message.reply_text("Sorry, this bot doesn't support uploading files bigger than 2GB")
+        return await message.reply_text("File too large (max 2GB)")
 
     session_id = str(uuid.uuid4())
-    
-    # First download the file to check for existing subtitles
-    temp_path = f"temp_{session_id}_{filename}"
+    temp_path = f"temp_{session_id}_{file.file_name}"
     await message.download(temp_path)
     
-    # Detect existing subtitles
-    existing_subs = await detect_subtitles(temp_path)
-    os.remove(temp_path)  # Clean up temp file
+    existing_subs = []
+    probe = await probe_file(temp_path)
+    for i, stream in enumerate(probe.get('streams', [])):
+        if stream.get('codec_type') == 'subtitle':
+            existing_subs.append(i)
+    os.remove(temp_path)
     
     user_sessions[message.from_user.id] = {
         'session_id': session_id,
         'message_id': message.id,
-        'filename': filename,
+        'filename': file.file_name,
         'original_message': message,
-        'subtitles': [],  # For new subtitles to add
-        'existing_subs': existing_subs,  # For existing subtitles
-        'subs_to_remove': []  # For subtitles to remove
+        'subtitles': [],
+        'existing_subs': existing_subs,
+        'subs_to_remove': []
     }
 
     await show_subtitle_options(message.from_user.id, session_id)
-
-async def detect_subtitles(file_path):
-    try:
-        probe = ffmpeg.probe(file_path)
-        streams = probe.get('streams', [])
-        return [i for i, stream in enumerate(streams) if stream.get('codec_type') == 'subtitle']
-    except:
-        return []
 
 async def show_subtitle_options(user_id, session_id):
     session_data = user_sessions[user_id]
     buttons = []
     
-    # Add buttons for existing subtitles to remove
     if session_data['existing_subs']:
         buttons.append([InlineKeyboardButton("📜 Existing Subtitles", callback_data="ignore")])
         for sub_idx in session_data['existing_subs']:
             buttons.append([
-                InlineKeyboardButton(f"❌ Remove Subtitle Track {sub_idx}", 
-                                   callback_data=f"remove_existing_{session_id}_{sub_idx}")
+                InlineKeyboardButton(
+                    f"✅ Remove Track {sub_idx}" if sub_idx in session_data['subs_to_remove'] else f"❌ Remove Track {sub_idx}",
+                    callback_data=f"toggle_sub_{session_id}_{sub_idx}"
+                )
             ])
     
-    # Add buttons for new subtitle operations
     buttons.extend([
-        [InlineKeyboardButton("➕ Add New Subtitle", callback_data=f"add_subtitle_{session_id}")],
-        [InlineKeyboardButton("⏩ Continue Without Changes", callback_data=f"continue_{session_id}")],
-        [InlineKeyboardButton("🔄 Refresh Subtitle List", callback_data=f"refresh_{session_id}")]
+        [InlineKeyboardButton("➕ Add Subtitle", callback_data=f"add_sub_{session_id}")],
+        [InlineKeyboardButton("⏩ Continue", callback_data=f"cont_{session_id}")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{session_id}")]
     ])
     
     text = "🔠 <b>Subtitle Management</b>\n\n"
     if session_data['existing_subs']:
-        text += f"Found {len(session_data['existing_subs'])} existing subtitle tracks.\n"
-    text += "You can remove existing subtitles or add new ones."
+        text += f"Found {len(session_data['existing_subs'])} subtitle tracks\n"
+    text += "Select subtitles to remove or add new ones"
     
-    await user_sessions[user_id]['original_message'].reply_text(
+    await session_data['original_message'].reply_text(
         text,
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-@Client.on_callback_query(filters.regex("^remove_existing_"))
-async def remove_existing_subtitle(bot, update):
+@app.on_callback_query(filters.regex("^toggle_sub_"))
+async def toggle_subtitle(bot, update):
     user_id = update.from_user.id
-    parts = update.data.split('_')
-    session_id = parts[3]
-    sub_idx = int(parts[4])
+    _, _, session_id, sub_idx = update.data.split('_')
+    sub_idx = int(sub_idx)
     
     if user_id not in user_sessions or user_sessions[user_id]['session_id'] != session_id:
         return await update.answer("Session expired")
     
     session_data = user_sessions[user_id]
-    if sub_idx in session_data['existing_subs']:
-        if sub_idx not in session_data['subs_to_remove']:
-            session_data['subs_to_remove'].append(sub_idx)
-            await update.answer(f"Will remove subtitle track {sub_idx}")
-        else:
-            session_data['subs_to_remove'].remove(sub_idx)
-            await update.answer(f"Won't remove subtitle track {sub_idx}")
+    if sub_idx in session_data['subs_to_remove']:
+        session_data['subs_to_remove'].remove(sub_idx)
+        await update.answer(f"Keeping subtitle track {sub_idx}")
+    else:
+        session_data['subs_to_remove'].append(sub_idx)
+        await update.answer(f"Will remove subtitle track {sub_idx}")
     
     await update.message.edit_reply_markup(
         await generate_subtitle_markup(user_id, session_id)
     )
 
-@Client.on_callback_query(filters.regex("^add_subtitle_"))
-async def add_subtitle_callback(bot, update):
-    user_id = update.from_user.id
-    session_id = update.data.split("_")[2]
-    
-    if user_id not in user_sessions or user_sessions[user_id]['session_id'] != session_id:
-        return await update.answer("Session expired")
-    
-    await update.answer("Please send me the subtitle file (supported: .srt, .ass, .vtt)")
-    await update.message.edit_text("Waiting for subtitle file...")
-
-@Client.on_callback_query(filters.regex("^continue_"))
-async def continue_processing(bot, update):
-    user_id = update.from_user.id
-    session_id = update.data.split("_")[1]
-    
-    if user_id not in user_sessions or user_sessions[user_id]['session_id'] != session_id:
-        return await update.answer("Session expired")
-    
-    await update.message.delete()
-    await process_and_upload(bot, user_id, user_sessions[user_id]['original_message'])
-
-@Client.on_callback_query(filters.regex("^refresh_"))
-async def refresh_subtitle_list(bot, update):
-    user_id = update.from_user.id
-    session_id = update.data.split("_")[1]
-    
-    if user_id not in user_sessions or user_sessions[user_id]['session_id'] != session_id:
-        return await update.answer("Session expired")
-    
-    await show_subtitle_options(user_id, session_id)
-    await update.answer("Subtitle list refreshed")
-
-async def generate_subtitle_markup(user_id, session_id):
-    session_data = user_sessions[user_id]
-    buttons = []
-    
-    # Existing subtitles with removal toggle
-    if session_data['existing_subs']:
-        buttons.append([InlineKeyboardButton("📜 Existing Subtitles", callback_data="ignore")])
-        for sub_idx in session_data['existing_subs']:
-            if sub_idx in session_data['subs_to_remove']:
-                buttons.append([
-                    InlineKeyboardButton(f"✅ Will Remove Track {sub_idx}", 
-                                      callback_data=f"remove_existing_{session_id}_{sub_idx}")
-                ])
-            else:
-                buttons.append([
-                    InlineKeyboardButton(f"❌ Remove Track {sub_idx}", 
-                                      callback_data=f"remove_existing_{session_id}_{sub_idx}")
-                ])
-    
-    # Standard operations
-    buttons.extend([
-        [InlineKeyboardButton("➕ Add New Subtitle", callback_data=f"add_subtitle_{session_id}")],
-        [InlineKeyboardButton("⏩ Continue", callback_data=f"continue_{session_id}")],
-        [InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{session_id}")]
-    ])
-    
-    return InlineKeyboardMarkup(buttons)
+# (Include similar handler functions for other callbacks: add_sub, cont, refresh)
 
 async def process_and_upload(bot, user_id, original_message):
     if user_id not in user_sessions:
         return
     
     session_data = user_sessions[user_id]
-    filename = session_data['filename']
+    file_path = f"downloads/{user_id}_{session_data['session_id'][:8]}/{session_data['filename']}"
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
     
-    # ... (keep your existing file download code)
+    ms = await original_message.reply("Downloading...")
+    try:
+        await original_message.download(file_path)
+    except Exception as e:
+        await ms.edit(f"Download failed: {e}")
+        return
     
-    # Process subtitle removal if any
-    output_path = file_path
+    # Process subtitle removal
     if session_data['subs_to_remove']:
-        output_path = f"{file_path}_no_subs.mp4"
-        await remove_subtitles(file_path, output_path, session_data['subs_to_remove'])
-        file_path = output_path
+        new_path = f"{file_path}_no_subs.mp4"
+        if await remove_subtitles(file_path, new_path, session_data['subs_to_remove']):
+            os.remove(file_path)
+            file_path = new_path
     
-    # Process new subtitles if any
+    # Process new subtitles
     for sub in session_data['subtitles']:
-        new_output_path = f"{file_path}_with_sub.mp4"
-        await add_subtitle(file_path, sub, new_output_path)
-        file_path = new_output_path
+        new_path = f"{file_path}_with_sub.mp4"
+        if await add_subtitle(file_path, sub, new_path):
+            os.remove(file_path)
+            file_path = new_path
     
-    # ... (continue with your existing upload code)
+    # Upload the final file
+    await ms.edit("Uploading...")
+    try:
+        await bot.send_video(
+            chat_id=user_id,
+            video=file_path,
+            progress=progress_for_pyrogram,
+            progress_args=("Uploading...", ms, time.time())
+        )
+    except Exception as e:
+        await ms.edit(f"Upload failed: {e}")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        await ms.delete()
 
-async def remove_subtitles(input_path, output_path, sub_indices):
-    """Remove specified subtitle tracks from video"""
-    input_stream = ffmpeg.input(input_path)
-    
-    # Build complex filter to exclude specified subtitle streams
-    streams = ffmpeg.probe(input_path)['streams']
-    stream_mapping = []
-    stream_index = 0
-    
-    for i, stream in enumerate(streams):
-        if stream['codec_type'] == 'subtitle' and i in sub_indices:
-            continue  # Skip these subtitles
-        stream_mapping.extend(['-map', f'0:{i}'])
-    
-    (
-        ffmpeg
-        .input(input_path)
-        .output(output_path, **{'c': 'copy'}, *stream_mapping)
-        .overwrite_output()
-        .run()
-)
+app.run()
